@@ -25,7 +25,7 @@ Product design: `docs/superpowers/specs/2026-10-25-offlimits-design.md`.
 Run all three and paste the result into the delivery template:
 
 ```
-node --test tests/
+node --test
 node hooks/selftest.mjs
 claude plugin validate --strict .
 ```

@@ -13,7 +13,7 @@ test('package.json has no dependencies and node --test script', () => {
   assert.equal(pkg.name, 'offlimits');
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.engines.node, '>=20');
-  assert.equal(pkg.scripts.test, 'node --test tests/');
+  assert.equal(pkg.scripts.test, 'node --test');
   for (const k of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
     assert.equal(pkg[k], undefined, `${k} must not exist`);
   }
