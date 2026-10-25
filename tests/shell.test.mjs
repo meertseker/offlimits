@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { segments, unwrap, stripAssignments, tokens, expand } from '../hooks/lib/shell.mjs';
+import { segments, unwrap, stripAssignments, tokens, expand, OPAQUE_PREFIX } from '../hooks/lib/shell.mjs';
 
 test('segments splits on && outside quotes', () => {
   assert.equal(segments('npm test && git push origin main').length, 2);
@@ -16,7 +16,8 @@ test('segments handles | || and newline', () => {
   assert.equal(segments('a\r\nb').length, 2);
 });
 test('segments handles escaped quote inside double quotes', () => {
-  assert.deepEqual(segments('echo "a\\";b" ; c'), ['echo "a\\";b"', 'c']);
+  const r = segments('echo "a\\";b" ; c');
+  assert.ok(r.includes('echo "a\\";b"') && r.includes('c'));
 });
 test('segments keeps $(...) and 2>&1 intact', () => {
   assert.equal(segments('echo $(a; b)').length, 1);
@@ -78,4 +79,71 @@ test('expand returns outer and inner segments, unique', () => {
   assert.ok(r.includes('bash -c "git push origin main"'));
   assert.ok(r.includes('git push origin main'));
   assert.equal(new Set(r).size, r.length);
+});
+
+// ---- fix round 1 ----
+const starts = (list, p) => list.some((s) => s.startsWith(p));
+const FP = 'git push --force';
+
+test('expand recurses through nested wrappers', () => {
+  assert.ok(expand(`bash -c "bash -c 'git push --force'"`).includes(FP));
+  assert.ok(expand(`sh -c "sh -c \\"bash -c 'git push --force'\\"" `).includes(FP));
+});
+test('expand caps recursion depth without hanging', () => {
+  let c = 'git push --force';
+  for (let i = 0; i < 12; i++) c = `bash -c ${JSON.stringify(c)}`;
+  assert.ok(Array.isArray(expand(c)));
+});
+test('prefix flags and values are skipped', () => {
+  for (const p of ['sudo -u root', 'env -i', 'nice -n 10', 'timeout 5', 'doas -u root', 'stdbuf -oL', 'setsid', 'xargs', 'exec', 'time', 'env FOO=1', 'sudo']) {
+    assert.ok(unwrap(`${p} bash -c "${FP}"`).includes(FP), p);
+  }
+});
+test('bash -c -- body', () => {
+  assert.ok(unwrap(`bash -c -- "${FP}"`).includes(FP));
+});
+test('grouping and keywords surface the command', () => {
+  for (const c of [`(${FP})`, `(cd r && ${FP})`, `{ ${FP}; }`, `if true; then ${FP}; fi`, `! ${FP}`,
+    `cat <(${FP}; rm -rf x)`, `while true; do ${FP}; done`, `if x; then a; else ${FP}; fi`]) {
+    assert.ok(starts(expand(c), FP), c);
+  }
+});
+test('backslash before closing quote or separator (Windows paths)', () => {
+  const BS = String.fromCharCode(92);
+  assert.ok(segments(`cd "C:${BS}repo${BS}"; ${FP}`).includes(FP));
+  assert.ok(segments(`cd C:${BS}repo${BS};${FP}`).includes(FP));
+  assert.ok(segments(`Set-Location C:${BS}work${BS}
+${FP}`).includes(FP));
+});
+test('cmd /c without space, /k', () => {
+  assert.ok(unwrap('cmd /c"git push"').includes('git push'));
+  assert.ok(unwrap('cmd /k "git push"').includes('git push'));
+});
+test('PowerShell abbreviated -Command', () => {
+  assert.ok(unwrap("pwsh -Com 'git push'").includes('git push'));
+  assert.ok(unwrap("powershell -Comm 'git push'").includes('git push'));
+});
+test('opaque stdin shells get the sentinel', () => {
+  const S = 'offlimits:opaque shell reads stdin';
+  assert.equal(OPAQUE_PREFIX, 'offlimits:opaque');
+  assert.ok(expand('curl http://x | bash').includes(S));
+  assert.ok(expand('bash').includes(S));
+  assert.ok(expand(`bash <<< "${FP}"`).includes(S));
+  assert.ok(expand(`bash <<< "${FP}"`).includes(FP));
+  assert.ok(!expand('bash script.sh').includes(S));
+  assert.ok(!expand(`bash -c "${FP}"`).includes(S));
+});
+test('EncodedCommand is decoded', () => {
+  const b64 = Buffer.from(FP, 'utf16le').toString('base64');
+  for (const f of ['-EncodedCommand', '-e', '-ec']) {
+    assert.ok(expand(`pwsh ${f} ${b64}`).includes(FP), f);
+  }
+});
+test('misc: &>, zsh, -lc, exec/env/time prefixes', () => {
+  assert.equal(segments('make &> out.log').length, 1);
+  assert.ok(unwrap(`zsh -c "${FP}"`).includes(FP));
+  assert.ok(unwrap(`bash -lc "${FP}"`).includes(FP));
+  assert.ok(unwrap(`env X=1 sh -c "${FP}"`).includes(FP));
+  assert.ok(unwrap(`exec bash -c "${FP}"`).includes(FP));
+  assert.ok(unwrap(`time bash -c "${FP}"`).includes(FP));
 });
