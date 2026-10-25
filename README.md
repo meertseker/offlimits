@@ -4,13 +4,13 @@
 
 Production is off limits. Prompts ask, hooks enforce. Runs in every permission mode, including --dangerously-skip-permissions.
 
-![A worker session's git push to main is blocked; the same push from a coordinator session goes through](assets/demo.svg)
+![A worker session's git push to main is blocked; in a separate coordinator session, started by the human with the role set, the same push goes through](assets/demo.svg)
 
 offlimits is a Claude Code plugin with one PreToolUse hook. It reads every shell command, file write and MCP call the agent is about to make, and refuses the ones that touch production: pushes to `main`, live database changes, deploys, package publishes, and SQL sent through MCP servers that happen to point at prod. No dependencies, no network, no account, no telemetry.
 
 ## Install
 
-Requires Claude Code 2.1.292 or newer and Node 20 or newer.
+Requires Claude Code 2.1.292 or newer for the one-command install (per the Claude Code plugin docs, install page) and Node 20 or newer.
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
@@ -30,11 +30,13 @@ Then run `/offlimits test` to watch the gate block a set of fixture calls in you
 This is what an agent sees when it tries. We started a real Claude Code 2.1.310 session with `--dangerously-skip-permissions` and `OFFLIMITS_ROLE=worker` and asked it to push to main:
 
 ```text
-PreToolUse:Bash hook error: ... offlimits: blocked git push origin main
-rule: git-push-protected ...
+offlimits: blocked git push origin main
+rule: git-push-protected - git push targets protected branch "main" (matched "git push origin main").
 role: worker
 Commit your branch and hand over to the coordinator; do not work around this.
 ```
+
+(Abridged: Claude Code prefixes the first line with `PreToolUse:Bash hook error:`.)
 
 The agent reported that it had been blocked and did not try a workaround.
 
@@ -47,20 +49,20 @@ Shell rules apply to `Bash` and `PowerShell` calls. Commands are split on `;`, `
 | `git-push-protected` | `git push` to a protected branch: explicit refspecs, `--all`, `--mirror`, `--delete main`, force pushes, or no refspec while the current branch is protected |
 | `git-branch-protected` | `git branch -D`, `-d`, `-M`, `-m` on a protected branch |
 | `gh-write` | `gh pr merge`, `gh workflow run`, `gh release create\|delete\|upload`, `gh repo delete`, and `gh api` writes to rulesets, branch protection and merges |
-| `supabase-remote` | `supabase db push`, `db reset --linked`, `db link`, `migration repair`, `functions deploy`, `secrets set\|unset` |
+| `supabase-remote` | `supabase db push`, `db reset --linked`, `db link`, `link`, `migration repair`, `functions deploy`, `secrets set\|unset` |
 | `remote-db` | `psql`, `pg_dump`, `pg_restore`, `mysql`, `mongosh` and friends against any host that is not local, or through `$DATABASE_URL` |
 | `db-migrate` | `prisma migrate deploy`, `prisma db push`, `drizzle-kit push\|migrate`, `flyway migrate`, `alembic upgrade`, `knex migrate:latest`, production `rails db:migrate`, `artisan migrate --force` |
-| `deploy` | Vercel, Netlify, Fly, Railway, Wrangler, Firebase, Serverless, SST, CDK, Pulumi, Terraform, kubectl, Helm, gcloud, AWS CloudFormation, Azure, EAS, remote deploy scripts over SSH |
+| `deploy` | `vercel` with `--prod`, `--target production`, `promote`, `rollback` or `alias set`; `netlify deploy --prod`; Fly, Railway, Wrangler, Firebase, Serverless, SST, CDK, Pulumi, Terraform and `tofu`, kubectl, Helm, gcloud, AWS CloudFormation, Azure, EAS; remote deploy scripts over SSH; `docker compose up -d` against compose files under `/opt`, `/srv` or `/var` |
 | `publish` | `npm publish`, `pnpm publish`, `yarn npm publish`, `cargo publish`, `twine upload`, `gem push`, `dotnet nuget push` |
 | `role-spoof` | any command that assigns `OFFLIMITS_ROLE`, so an agent cannot promote itself |
 | `protected-file` | writes to `.claude/settings.json`, `.claude/hooks/**`, `offlimits.json` and `.github/workflows/**`, by file tools or by `>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content` and similar |
 | `opaque-shell` | a shell that reads its commands from stdin, which the hook cannot inspect |
 | `extra-deny` | your own regexes from `offlimits.json` |
-| `supabase-mcp` | Supabase MCP `apply_migration`, `deploy_edge_function`, branch merge, reset, rebase and delete, and `execute_sql` containing `insert`, `update`, `delete`, `alter`, `create`, `drop`, `truncate`, `grant` or `revoke` |
+| `supabase-mcp` | Supabase MCP `apply_migration`, `deploy_edge_function`, `create_edge_function_secret`, branch merge, reset, rebase and delete, and `execute_sql` containing write keywords, for example INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE, GRANT, COPY, MERGE |
 | `vercel-mcp` | any Vercel MCP tool that is not a read |
 | `mcp-write` | any non-read tool on a server listed in `production.mcpServers`, and any MCP call that names a project in `production.projectRefs` |
 
-Reads always pass: `git push` to a feature branch, `list_tables`, `SELECT` queries, `get_*` tools.
+Read-only MCP tools and SELECT queries through `execute_sql` pass unless the call names a project in `projectRefs`; pushes to non-protected branches pass.
 
 ## Roles
 
@@ -69,10 +71,10 @@ The role comes only from the `OFFLIMITS_ROLE` environment variable that you set 
 | Role | How | What it can do |
 |---|---|---|
 | `coordinator` | `OFFLIMITS_ROLE=coordinator`, main session only | Everything. This is the one session that merges and deploys |
-| `worker` | `OFFLIMITS_ROLE=worker`, and every subagent of a coordinator | Every rule above denies |
-| `solo` | variable not set | Hard rules deny. `db-migrate`, `opaque-shell`, and `supabase-mcp` and `vercel-mcp` writes ask when no `production` section is configured |
+| `worker` | `OFFLIMITS_ROLE=worker`, and any subagent (the hook input carries an `agent_id`) unless its `agent_type` is in `trustedAgentTypes` | Every rule above denies |
+| `solo` | variable not set, or set to anything other than `coordinator` or `worker` | Hard rules deny. `db-migrate`, `opaque-shell`, and `supabase-mcp` and `vercel-mcp` writes ask unless the server or project is listed under `production` |
 
-If the hook itself fails, a worker is blocked (fail closed) and a solo user is let through with a log entry and a visible warning. Change this with `onError`.
+If the hook itself fails, a worker is blocked (fail closed); a coordinator or solo session is let through, with a log entry and a visible warning. Change this with `onError`.
 
 ## Why a hook and not a prompt
 
@@ -87,14 +89,14 @@ We summarise the other projects only from what their own READMEs state. Check th
 
 | | Native `permissions.deny` | [karanb192/claude-code-hooks](https://github.com/karanb192/claude-code-hooks) | [rulebricks/claude-code-guardrails](https://github.com/rulebricks/claude-code-guardrails) | offlimits |
 |---|---|---|---|---|
-| Works in bypass mode | Yes, per the Claude Code docs | Hook based; bypass mode not stated | Hook based; bypass mode not stated | Yes, verified on 2.1.310 |
-| Role-aware (coordinator and workers) | No | No | No | Yes |
-| MCP SQL inspection | No | No | No | Yes (Supabase `execute_sql`) |
-| Nested shell parsing | No, matches command text | In one guard only | Not stated | Yes, recursive (`bash -c`, `eval`, `$(...)`) |
-| Zero dependencies | Built in | Not stated | Needs the Rulebricks service | Yes, Node built-ins only |
-| No account | Yes | Yes | Needs a Rulebricks account and API key | Yes |
+| Works in bypass mode | Deny rules override every permission mode (Claude Code SDK permissions doc) | Not stated | Not stated | Yes, verified on 2.1.310 |
+| Role-aware (coordinator and workers) | No | Not stated | Not stated | Yes |
+| MCP SQL inspection | No | Not stated | Not stated | Yes (Supabase `execute_sql`) |
+| Nested shell parsing | Compound commands, subshells and $(...) yes; sh -c / bash -c no | In one guard only | Not stated | Yes, recursive (`bash -c`, `eval`, `$(...)`) |
+| Zero dependencies | Built in | No npm dependencies (Node >= 18); some plugins need uv/npx | Not stated | Yes, Node built-ins only |
+| No account | Yes | Not stated | Needs a Rulebricks account and API key | Yes |
 
-karanb192/claude-code-hooks is a broader collection (it blocks pushes to main, secrets and `rm -rf`) with around 547 stars; if you want those checks, run it next to offlimits. Native deny rules are the right tool for exact, static patterns. offlimits is for the production boundary and for teams of sessions.
+karanb192/claude-code-hooks is a broader collection (force pushes to main, secrets via a separate plugin, `rm -rf`); if you want those checks, run it next to offlimits. Native deny rules are the right tool for exact, static patterns. offlimits is for the production boundary and for teams of sessions.
 
 ## Configuration
 
@@ -115,7 +117,7 @@ No configuration is needed. To tune it, add `offlimits.json` to the repository r
 }
 ```
 
-Every key, type and default is in [docs/policy.md](docs/policy.md). Defining `production` turns MCP write asks into denies for solo users. Blocks are logged to `.offlimits/log.jsonl`; run `/offlimits` to see the last ten, and `/offlimits explain <command>` to see what the gate would do with a command without running it.
+Every key, type and default is in [docs/policy.md](docs/policy.md). Listing a server in `production.mcpServers`, or a project in `production.projectRefs`, turns MCP write asks into denies for solo users; `production.hosts` only affects `remote-db`. Blocks are logged to `.offlimits/log.jsonl`; run `/offlimits` to see the last ten, and `/offlimits explain <command>` to see what the gate would do with a command without running it.
 
 ## Limits
 

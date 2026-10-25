@@ -87,7 +87,7 @@ test('demo.svg is well-formed, small and self-contained', () => {
     else stack.push(m[2]);
   }
   assert.equal(stack.length, 0);
-  assert.ok(svg.includes('git push origin main') && svg.includes('OFFLIMITS_ROLE=coordinator'));
+  assert.ok(svg.includes('git push origin main') && svg.includes('coordinator session') && !svg.includes('OFFLIMITS_ROLE=coordinator git'));
 });
 
 test('every file the docs own is under 256 KiB', () => {
