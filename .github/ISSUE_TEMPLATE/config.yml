@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a sensitive bypass privately
+    url: https://github.com/meertseker/offlimits/security/advisories/new
+    about: Use GitHub private vulnerability reporting for bypasses that are not safe to publish yet.
