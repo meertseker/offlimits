@@ -60,7 +60,7 @@ function main() {
     const root = repoRoot(cwd);
     const { policy } = loadPolicy(root ?? cwd);
     const role = resolveRole(input, process.env, policy);
-    const d = decide(input, { role, policy, currentBranch, cwd, repoRoot: root });
+    const d = decide(input, { role, policy, currentBranch, cwd, repoRoot: root, commonRoot: commonRoot(cwd) });
     if (d.action === 'allow') return;
     const summary = summarize(input);
     record(cwd, input, role, d.action, d.rule, summary);

@@ -17,6 +17,7 @@ Several agent sessions can share one repo without stepping on production if each
 1. Coordinator creates a worktree per task: `git worktree add ../repo-task -b feat/task`.
 2. Start the worker session inside that worktree with the worker role set.
 3. A worker never pushes to `main`, never deploys, never writes to production, never edits gate config.
+4. The same holds through MCP tools (for example a GitHub MCP merge or a commit to `main`) and through child agents: a worker does not start `claude`, `codex` or another agent CLI to do what it may not do itself.
 
 ## While working
 

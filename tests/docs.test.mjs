@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
-const RULES = ['git-push-protected', 'git-branch-protected', 'gh-write', 'supabase-remote', 'remote-db', 'db-migrate', 'deploy', 'publish', 'role-spoof', 'protected-file', 'opaque-shell', 'supabase-mcp', 'vercel-mcp', 'mcp-write', 'extra-deny'];
+const RULES = ['git-push-protected', 'git-branch-protected', 'gh-write', 'supabase-remote', 'remote-db', 'db-migrate', 'deploy', 'publish', 'role-spoof', 'protected-file', 'opaque-shell', 'supabase-mcp', 'vercel-mcp', 'mcp-write', 'extra-deny', 'github-mcp', 'mcp-destructive', 'agent-spawn', 'git-clean'];
 const KEYS = ['protectedBranches', 'protectedPaths', 'production', 'mcpServers', 'projectRefs', 'hosts', 'extraDeny', 'allow', 'trustedAgentTypes', 'roleEnv', 'onError'];
 const outsideCode = (s) => s.replace(/```[\s\S]*?```/g, '');
 
@@ -44,6 +44,17 @@ test('every rule id appears in the README or docs/policy.md', () => {
   for (const id of RULES) assert.ok(text.includes(`\`${id}\``), `missing ${id}`);
 });
 
+test('every exported RULE_IDS entry is documented and in the CHANGELOG', async () => {
+  const { RULE_IDS } = await import('../hooks/lib/rules.mjs');
+  if (!Array.isArray(RULE_IDS)) return;
+  const text = read('README.md') + read('docs/policy.md');
+  const log = read('CHANGELOG.md');
+  for (const id of RULE_IDS) {
+    assert.ok(text.includes(`\`${id}\``), `docs miss ${id}`);
+    assert.ok(log.includes(id), `CHANGELOG misses ${id}`);
+  }
+});
+
 test('docs/policy.md documents every policy key', () => {
   const t = read('docs/policy.md');
   for (const k of KEYS) assert.ok(t.includes(k), `missing key ${k}`);
@@ -52,6 +63,18 @@ test('docs/policy.md documents every policy key', () => {
 test('docs/limits.md lists at least 5 limits', () => {
   const bullets = read('docs/limits.md').split('\n').filter((l) => /^(- |\d+\. |### )/.test(l));
   assert.ok(bullets.length >= 5);
+});
+
+test('Task 11 doc lines: limits and policy wording', () => {
+  const limits = read('docs/limits.md');
+  assert.ok(limits.includes('curl -X PUT https://api.github.com'), 'raw API calls out of scope');
+  assert.ok(limits.includes('npm run <script>'), 'npm run is opaque');
+  assert.ok(limits.includes('`allow` patterns are unanchored'), 'allow is unanchored');
+  const policy = read('docs/policy.md');
+  assert.ok(policy.includes('(production not matching)'));
+  assert.ok(!policy.includes('(no production section)'));
+  assert.ok(policy.includes('release/*'), 'protectedBranches globs');
+  assert.ok(policy.includes('~/.claude/settings.json'), 'user settings are protected');
 });
 
 test('docs/incidents.md labels each incident honestly', () => {

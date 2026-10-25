@@ -4,12 +4,15 @@ import { loadPolicy } from './lib/policy.mjs';
 import { resolveRole } from './lib/role.mjs';
 import { repoRoot, commonRoot, currentBranch } from './lib/git.mjs';
 import { readLog } from './lib/log.mjs';
+import * as rules from './lib/rules.mjs';
 
-const RULES = [
+// Used only if rules.mjs does not export RULE_IDS.
+const FALLBACK_RULES = [
   'git-push-protected', 'git-branch-protected', 'gh-write', 'supabase-remote', 'remote-db', 'db-migrate',
-  'deploy', 'publish', 'role-spoof', 'protected-file', 'supabase-mcp', 'vercel-mcp', 'mcp-write',
-  'extra-deny', 'opaque-shell',
+  'deploy', 'publish', 'role-spoof', 'agent-spawn', 'protected-file', 'supabase-mcp', 'vercel-mcp', 'github-mcp',
+  'mcp-write', 'mcp-destructive', 'extra-deny', 'opaque-shell',
 ];
+const RULES = Array.isArray(rules.RULE_IDS) && rules.RULE_IDS.length ? rules.RULE_IDS : FALLBACK_RULES;
 
 try {
   const cwd = process.cwd();

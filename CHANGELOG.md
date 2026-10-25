@@ -15,15 +15,19 @@ Rules for `Bash` and `PowerShell` calls:
 - `deploy`: Vercel, Netlify, Fly, Railway, Wrangler, Firebase, Serverless, SST, CDK, Pulumi, Terraform, kubectl, Helm, gcloud, AWS CloudFormation, Azure, EAS, remote deploy scripts over SSH
 - `publish`: `npm`, `pnpm`, `yarn`, `cargo`, `twine`, `gem`, `dotnet nuget` publishing
 - `role-spoof`: assigning the role variable from inside a command
-- `protected-file`: writes to hook config and policy files, through file tools and shell commands
+- `agent-spawn`: a worker starting another agent CLI (ask in solo)
+- `git-clean`: `git clean -x|-X`, which also deletes ignored files (ask in solo, deny for workers)
+- `protected-file`: writes to hook config, policy files and the user-level Claude Code settings, through file tools and shell commands (including globs, parent directories, copies, downloads and `git rm`/`git mv`), and any call that mentions `disableAllHooks`
 - `opaque-shell`: shells that read commands from stdin (ask in solo, deny for workers)
 - `extra-deny`: your own patterns from `offlimits.json`
 
 Rules for MCP tools:
 
-- `supabase-mcp`: schema-changing tools and write SQL through `execute_sql`
-- `vercel-mcp`: any non-read tool on a Vercel server
+- `supabase-mcp`: schema- and project-changing tools and any `execute_sql` that is not a read statement
+- `vercel-mcp`: any non-read tool on a Vercel server, and `web_fetch_vercel_url` with a write method
+- `github-mcp`: GitHub MCP pull request merges and file or ref writes on protected branches
 - `mcp-write`: any non-read tool on servers listed in `production.mcpServers`, and any call that names a project in `production.projectRefs`
+- `mcp-destructive`: destructive tool names and write SQL on other MCP servers (ask in solo, deny for workers)
 
 Also in this release:
 

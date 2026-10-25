@@ -15,7 +15,7 @@
   "extraDeny": [
     { "pattern": "\\bterraform\\s+apply\\b", "reason": "Infrastructure changes go through the coordinator." }
   ],
-  "allow": ["^git push origin feat/[\\w./-]+$"],
+  "allow": ["^git push origin feat/[\\w./-]+$", "^vercel env (ls|pull)( |$)"],
   "trustedAgentTypes": [],
   "roleEnv": "OFFLIMITS_ROLE",
   "onError": "auto"

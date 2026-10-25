@@ -14,10 +14,10 @@ All regular expressions are JavaScript regexes. `allow` and `extraDeny` patterns
 - Default: `["main", "master"]`
 - Used by: `git-push-protected`, `git-branch-protected`
 
-Branch names that agents may not push to, delete or rename. Setting it replaces the default list, so include `main` again if you still want it.
+Branch names that agents may not push to, delete or rename, through git or through a GitHub MCP server (`github-mcp`). Entries may be globs: `*` matches within one path segment and `?` one character, so `release/*` covers `release/1.2` but not `release/1/hotfix`. Setting it replaces the default list, so include `main` again if you still want it.
 
 ```json
-{ "protectedBranches": ["main", "release", "production"] }
+{ "protectedBranches": ["main", "release/*", "production"] }
 ```
 
 ### `protectedPaths`
@@ -26,7 +26,9 @@ Branch names that agents may not push to, delete or rename. Setting it replaces 
 - Default: `[".claude/settings.json", ".claude/settings.local.json", ".claude/hooks/**", "offlimits.json", ".github/workflows/**"]`
 - Used by: `protected-file`
 
-Files that `Write`, `Edit`, `MultiEdit` and `NotebookEdit` may not touch, and that shell commands may not write to (`>`, `>>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content`, `Out-File`, `git restore`, and similar). Setting it replaces the default list. Keep `offlimits.json` and `.claude/settings.json` in it, or an agent can edit the gate away.
+Files that `Write`, `Edit`, `MultiEdit` and `NotebookEdit` may not touch, and that shell commands may not write to (`>`, `>>`, `tee`, `sed -i`, `perl -i`, `cp`, `mv`, `rm`, `rsync`, `curl -o`, `wget -O`, `git rm`, `git mv`, `git checkout`, `git restore`, `Set-Content`, `Out-File`, `Rename-Item`, `Tee-Object`, `[IO.File]::WriteAllText`, and similar). Globs in shell arguments (`rm offlimits.*`, `rm -rf .c*`) count when they could match a protected path, and deleting or moving a parent directory (`rm -rf .claude`, `rm -rf ..`) counts too. Patterns are matched against both the current worktree and the main worktree, so a worker in a linked worktree cannot write the main checkout's `offlimits.json` by absolute path. Setting it replaces the default list. Keep `offlimits.json` and `.claude/settings.json` in it, or an agent can edit the gate away.
+
+Always protected, whatever this key says: the user-level Claude Code settings `~/.claude/settings.json` and `~/.claude/settings.local.json` (and the same files under `$CLAUDE_CONFIG_DIR` when it is set). Any file-tool input that contains `disableAllHooks`, and any shell command that mentions it and writes, is denied.
 
 ```json
 { "protectedPaths": [".claude/settings.json", ".claude/settings.local.json", ".claude/hooks/**", "offlimits.json", ".github/workflows/**", "infra/**"] }
@@ -45,7 +47,7 @@ Solo mode asks, rather than denies, for write calls on Supabase and Vercel MCP s
 - Default: `[]`
 - Used by: `mcp-write`, `supabase-mcp`, `vercel-mcp`
 
-MCP server names (the `<server>` part of `mcp__<server>__<tool>`). A name matches a server that equals it or ends with `_<name>`, case-insensitively. Every tool on a listed server is denied unless its name starts with a read verb: `get`, `list`, `search`, `read`, `describe`, `query`, `fetch`, `find`, `count`, `aggregate`, `filter`, `show`, `check`, `lookup`, `retrieve`, `watch`. This is the only way to cover MCP servers whose tool names offlimits does not know.
+MCP server names (the `<server>` part of `mcp__<server>__<tool>`). A name matches a server that equals it or ends with `_<name>`, case-insensitively. Every tool on a listed server is denied unless its name is a read verb followed by `_`, `-`, a capital letter or the end of the name (`get_project`, `getProject`, `show`; not `checkout_and_deploy`): `get`, `list`, `search`, `read`, `describe`, `query`, `fetch`, `find`, `count`, `aggregate`, `filter`, `show`, `check`, `lookup`, `retrieve`, `watch`. A read-verb name that also contains a write word (`show_drop`, `get_and_delete`) is not a read. Tools named `query*` or containing `sql` are judged by the SQL they carry instead: read SQL passes, write SQL is denied. This is the only way to cover MCP servers whose tool names offlimits does not know.
 
 #### `production.projectRefs`
 
@@ -53,7 +55,7 @@ MCP server names (the `<server>` part of `mcp__<server>__<tool>`). A name matche
 - Default: `[]`
 - Used by: `mcp-write`
 
-Project identifiers. Any MCP tool call whose input contains `project_ref`, `projectRef` or `project_id` (at any depth, up to 7 levels) with one of these values is denied, whatever the tool is called.
+Project identifiers. Any MCP tool call whose input holds one of these values in any string field (`project_ref`, `projectRef`, `project_id`, `projectId` or any other key, at any depth up to 8 levels) is denied, whatever the tool is called. The comparison ignores case, and a ref of 8 or more characters also counts inside a longer string such as `db.<ref>.supabase.co`.
 
 #### `production.hosts`
 
@@ -84,10 +86,10 @@ Your own deny rules. `pattern` is a regex tested against each command segment of
 - Type: array of regex strings
 - Default: `[]`
 
-A command segment that matches any pattern skips every shell rule except `role-spoof` and the file-write check. It does not affect MCP or `Write`/`Edit` calls. Anchor your patterns (`^...$`): an unanchored pattern such as `git push` would allow `git push origin main` too.
+A command segment that matches any pattern skips every shell rule except `role-spoof` and the file-write check. It does not affect MCP or `Write`/`Edit` calls. Patterns are unanchored, case-insensitive regexes: `"allow": ["vercel"]` lets `vercel --prod` through, and `git push` would allow `git push origin main` too. Anchor your patterns (`^...$`, or `^...( |$)` for a command prefix).
 
 ```json
-{ "allow": ["^git push origin feat/[\\w./-]+$"] }
+{ "allow": ["^git push origin feat/[\\w./-]+$", "^vercel env pull( |$)"] }
 ```
 
 ### `trustedAgentTypes`
@@ -113,13 +115,22 @@ What the hook does when it crashes or cannot parse its input. `auto` blocks when
 
 ## Roles and defaults
 
-| Role | Set by | Hard rules | `db-migrate`, `opaque-shell`, `supabase-mcp`, `vercel-mcp` (no `production` section) |
+| Role | Set by | Hard rules | `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp`, `vercel-mcp` writes (production not matching) |
 |---|---|---|---|
 | `coordinator` | `OFFLIMITS_ROLE=coordinator` in the environment, main session only | allowed | allowed |
 | `worker` | `OFFLIMITS_ROLE=worker`, or any subagent (unless in `trustedAgentTypes`) | deny | deny |
 | `solo` | variable not set, or any other value | deny | ask |
 
-The hard rules are `git-push-protected`, `git-branch-protected`, `gh-write`, `supabase-remote`, `remote-db`, `deploy`, `publish`, `role-spoof`, `protected-file`, `extra-deny` and `mcp-write`. Solo mode denies `supabase-mcp` and `vercel-mcp` writes too when the server is in `production.mcpServers` or the call names a project in `production.projectRefs`.
+The hard rules are `git-push-protected`, `git-branch-protected`, `gh-write`, `supabase-remote`, `remote-db`, `deploy`, `publish`, `role-spoof`, `protected-file`, `github-mcp`, `extra-deny` and `mcp-write`. Solo mode denies `supabase-mcp` and `vercel-mcp` writes too when the server is in `production.mcpServers` or the call names a project in `production.projectRefs`.
+
+"Unsure" means the hook cannot tell whether a call is safe: a push whose destination is built from a variable or follows a checkout in the same command, a relative write after a `cd` it cannot follow, or a GitHub MCP file write that names no branch. Unsure calls carry the id of the rule they would fall under.
+
+## GitHub MCP, destructive MCP tools and child agents
+
+- `github-mcp`: on any MCP server whose name contains `github`, `merge_pull_request` is denied, and `push_files`, `create_or_update_file`, `delete_file`, `update_ref` and `delete_branch` are denied when their `branch` or `ref` input names a protected branch (`main`, `refs/heads/main`, `heads/main`, or a `protectedBranches` glob). The same tools with no branch are unsure. Writes to other branches pass, like `git push origin feat/x`.
+- `mcp-destructive`: on an MCP server that is not in `production.mcpServers`, a tool whose name starts with `delete`, `destroy`, `drop`, `deploy`, `reset`, `merge`, `promote`, `rollback`, `pause`, `push`, `publish`, `truncate` or `remove` (followed by `_`, `-`, a capital letter or the end of the name), and a `*sql*` or `query*` tool that carries write SQL, ask in solo mode and are denied for a worker. The Supabase, Vercel and GitHub rules run first. Vercel `web_fetch_vercel_url` with a `method` other than `GET` or `HEAD` is handled the same way under `vercel-mcp`.
+- `agent-spawn`: a worker may not start another agent CLI (`claude`, `codex`, `aider`, `gemini`), because the child inherits the role variable but not the subagent marker; solo mode asks.
+- `git-clean`: `git clean` with `-x` or `-X` (it also deletes ignored files such as `.env` and local databases) asks in solo mode and is denied for a worker; `-n`/`--dry-run` passes.
 
 ## Unknown current branch
 

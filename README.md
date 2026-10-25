@@ -56,11 +56,14 @@ Shell rules apply to `Bash` and `PowerShell` calls. Commands are split on `;`, `
 | `publish` | `npm publish`, `pnpm publish`, `yarn npm publish`, `cargo publish`, `twine upload`, `gem push`, `dotnet nuget push` |
 | `role-spoof` | any command that assigns `OFFLIMITS_ROLE`, so an agent cannot promote itself |
 | `protected-file` | writes to `.claude/settings.json`, `.claude/hooks/**`, `offlimits.json` and `.github/workflows/**`, by file tools or by `>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content` and similar |
+| `agent-spawn` | a worker starting another agent CLI (`claude`, `codex`, `aider`, `gemini`), which would run without the worker marker; solo asks |
 | `opaque-shell` | a shell that reads its commands from stdin, which the hook cannot inspect |
 | `extra-deny` | your own regexes from `offlimits.json` |
 | `supabase-mcp` | Supabase MCP `apply_migration`, `deploy_edge_function`, `create_edge_function_secret`, branch merge, reset, rebase and delete, and `execute_sql` containing write keywords, for example INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE, GRANT, COPY, MERGE |
 | `vercel-mcp` | any Vercel MCP tool that is not a read |
+| `github-mcp` | GitHub MCP `merge_pull_request`, and `push_files`, `create_or_update_file`, `delete_file`, `update_ref` on a protected branch |
 | `mcp-write` | any non-read tool on a server listed in `production.mcpServers`, and any MCP call that names a project in `production.projectRefs` |
+| `mcp-destructive` | on other MCP servers, tools named `delete_*`, `deploy_*`, `drop_*`, `push_*`, `merge_*` and similar, and SQL tools sending write SQL; solo asks |
 
 Read-only MCP tools and SELECT queries through `execute_sql` pass unless the call names a project in `projectRefs`; pushes to non-protected branches pass.
 

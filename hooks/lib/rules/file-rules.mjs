@@ -1,27 +1,65 @@
 // Protected-file rule: blocks workers from writing hook config and policy files.
 
-import { globMatch, normalizeRel } from '../paths.mjs';
+import os from 'node:os';
+import { globMatch, normalizeRel, resolvePath, isAbsolutePath, isAncestorOrSelf, expandHome } from '../paths.mjs';
 import { tokens, stripAssignments } from '../shell.mjs';
 
 const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-const WRAPPERS = new Set(['sudo', 'env', 'command', 'exec', 'time', 'nohup', 'nice', 'builtin']);
+
+// Wrappers that run the next command. Value: flags that take a separate value, and how many
+// leading positionals (duration, priority, lock file...) the wrapper itself consumes.
+const WRAPPERS = new Map([
+  ['sudo', { values: ['-u', '-g', '-p', '-C', '-D', '-h', '-r', '-t', '-U', '-T'], skip: 0 }],
+  ['doas', { values: ['-u', '-C'], skip: 0 }],
+  ['env', { values: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'], skip: 0 }],
+  ['command', { values: [], skip: 0 }],
+  ['builtin', { values: [], skip: 0 }],
+  ['exec', { values: ['-a'], skip: 0 }],
+  ['time', { values: ['-f', '--format', '-o', '--output'], skip: 0 }],
+  ['nohup', { values: [], skip: 0 }],
+  ['nice', { values: ['-n', '--adjustment'], skip: 0 }],
+  ['ionice', { values: ['-c', '--class', '-n', '--classdata', '-p', '-P', '-u'], skip: 0 }],
+  ['timeout', { values: ['-s', '--signal', '-k', '--kill-after'], skip: 1 }],
+  ['stdbuf', { values: ['-i', '-o', '-e'], skip: 0 }],
+  ['setsid', { values: [], skip: 0 }],
+  ['flock', { values: ['-w', '--timeout', '-E', '--conflict-exit-code'], skip: 1 }],
+  ['chrt', { values: [], skip: 1 }],
+  ['taskset', { values: [], skip: 1 }],
+  ['xargs', { values: ['-I', '-n', '-P', '-L', '-s', '-d', '-E', '-a'], skip: 0 }],
+  ['watch', { values: ['-n', '--interval'], skip: 0 }],
+  ['unbuffer', { values: [], skip: 0 }],
+  ['winpty', { values: [], skip: 0 }],
+  ['strace', { values: ['-o', '-e', '-p', '-s'], skip: 0 }],
+]);
 
 // commands whose every positional is removed or moved away (parents count too)
 const REMOVERS = new Set(['rm', 'rmdir', 'unlink', 'del', 'erase', 'rd', 'ri', 'remove-item']);
 const MOVERS = new Set(['mv', 'move', 'mi', 'move-item']);
-const COPIERS = new Set(['cp', 'copy', 'cpi', 'copy-item']);
-const LAST_POSITIONAL = new Set(['install', 'ln']);
-const EVERY_POSITIONAL = new Set(['truncate', 'shred']);
-const FIRST_POSITIONAL = new Set(['set-content', 'sc', 'add-content', 'ac', 'out-file', 'clear-content', 'clc']);
+const RENAMERS = new Set(['rename-item', 'ren', 'rni']);
+const COPIERS = new Set(['cp', 'copy', 'cpi', 'copy-item', 'install', 'ln', 'rsync', 'scp']);
+const EVERY_POSITIONAL = new Set(['truncate', 'shred', 'touch']);
+const FIRST_POSITIONAL = new Set(['set-content', 'sc', 'add-content', 'ac', 'out-file', 'clear-content', 'clc', 'tee-object']);
 const PS_VALUE_PARAMS = new Set([
   'value', 'encoding', 'filter', 'include', 'exclude', 'itemtype', 'stream', 'width', 'delimiter',
-  'name', 'credential', 'destination', 'path', 'filepath', 'literalpath', 'type',
+  'name', 'credential', 'destination', 'path', 'filepath', 'literalpath', 'type', 'newname', 'inputobject', 'variable',
 ]);
+// POSIX value flags per copier (the value is not a path we care about, or it is the target dir)
+const COPY_VALUES = {
+  cp: ['-S', '--suffix'],
+  install: ['-m', '--mode', '-o', '--owner', '-g', '--group', '-S', '--suffix'],
+  ln: ['-S', '--suffix'],
+  rsync: ['-e', '--rsh', '--exclude', '--include', '--filter', '-f', '--files-from', '--exclude-from', '--include-from',
+    '--password-file', '--log-file', '--backup-dir', '--temp-dir', '-T', '--partial-dir', '--chmod', '--chown', '--suffix', '-B', '--block-size'],
+  scp: ['-P', '-i', '-o', '-F', '-l', '-S', '-c', '-J'],
+};
+const GLOB = /[*?[{]/;
+const DISABLE_HOOKS = /disableAllHooks/i;
 
 const base = (tok) => String(tok).replaceAll('\\', '/').split('/').pop().replace(/\.exe$/i, '').toLowerCase();
+const isRemote = (p) => /^[^/\\]{2,}:/.test(p) && !/^[A-Za-z]:[\\/]?/.test(p);
 
 function parentChain(globs) {
-  // literal directory prefix of each glob (up to the first wildcard segment), lower-cased
+  // literal directory prefix of each glob (up to the first wildcard segment)
   return globs.map((g) => {
     const segs = g.replaceAll('\\', '/').split('/');
     const lit = [];
@@ -29,43 +67,210 @@ function parentChain(globs) {
       if (/[*?]/.test(s)) break;
       lit.push(s);
     }
-    return lit.join('/').toLowerCase();
+    return lit.join('/');
   });
 }
 
-/** The protected glob that `p` matches, or null. With `ancestors`, a parent directory of a protected path also counts. */
-function hit(p, ctx, ancestors = false) {
-  if (typeof p !== 'string' || p === '') return null;
-  const rel = normalizeRel(ctx.repoRoot ?? ctx.cwd, p);
+const homeOf = (ctx) => ctx.home ?? os.homedir();
+const envOf = (ctx) => ctx.env ?? process.env;
+
+/** Repository roots a relative protected glob is anchored at: the worktree and the main worktree. */
+function roots(ctx) {
+  const out = [];
+  for (const r of [ctx.repoRoot ?? ctx.cwd, ctx.commonRoot]) {
+    if (typeof r === 'string' && r && !out.some((x) => isAncestorOrSelf(x, r) && isAncestorOrSelf(r, x))) out.push(r);
+  }
+  return out;
+}
+
+/** Absolute user-level files that are always protected (Claude Code user settings). */
+function userFiles(ctx) {
+  const dirs = [`${homeOf(ctx)}/.claude`];
+  const cfg = envOf(ctx).CLAUDE_CONFIG_DIR;
+  if (typeof cfg === 'string' && cfg) dirs.push(cfg);
+  return dirs.flatMap((d) => [`${d}/settings.json`, `${d}/settings.local.json`]);
+}
+
+/** The protected entry that absolute `abs` hits, or null. With `ancestors`, a parent directory counts. */
+function hitAbs(abs, ctx, ancestors) {
   const globs = ctx.policy.protectedPaths ?? [];
-  const direct = globs.find((g) => globMatch(g, rel));
-  if (direct) return direct;
-  if (!ancestors) return null;
   const lits = parentChain(globs);
-  const r = rel.toLowerCase();
-  for (let k = 0; k < globs.length; k++) {
-    if (r === '.' || (lits[k] && lits[k].startsWith(`${r}/`))) return globs[k];
+  for (const root of roots(ctx)) {
+    const rel = normalizeRel(root, abs);
+    const direct = globs.find((g) => globMatch(g, rel));
+    if (direct) return direct;
+    if (!ancestors) continue;
+    // "/" counts as above every root (on Windows it is a drive root or the Git Bash install dir)
+    if (abs === '/' || isAncestorOrSelf(abs, root)) return globs[0] ?? root;
+    const r = rel.toLowerCase();
+    for (let k = 0; k < globs.length; k++) {
+      if (lits[k] && lits[k].toLowerCase().startsWith(`${r}/`)) return globs[k];
+    }
+  }
+  for (const f of userFiles(ctx)) {
+    if (ancestors ? isAncestorOrSelf(abs, f) : isAncestorOrSelf(abs, f) && isAncestorOrSelf(f, abs)) return f;
   }
   return null;
 }
 
-function deny(p, how) {
+/** Concrete paths a glob target could reach: protected literals, their parents, the roots and their parents. */
+function candidates(ctx, ancestors) {
+  const out = [];
+  const globs = ctx.policy.protectedPaths ?? [];
+  for (const root of roots(ctx)) {
+    for (const lit of parentChain(globs)) {
+      if (!lit) continue;
+      const segs = lit.split('/');
+      const upto = ancestors ? segs.length : segs.length; // the literal itself
+      for (let n = ancestors ? 1 : upto; n <= upto; n++) out.push(resolvePath(root, segs.slice(0, n).join('/')));
+    }
+    if (ancestors) {
+      let r = resolvePath(root, '.');
+      for (;;) {
+        out.push(r);
+        const up = resolvePath(r, '..');
+        if (up === r) break;
+        r = up;
+      }
+    }
+  }
+  for (const f of userFiles(ctx)) {
+    let p = resolvePath(f, '.');
+    out.push(p);
+    if (ancestors) {
+      for (;;) {
+        const up = resolvePath(p, '..');
+        if (up === p) break;
+        out.push((p = up));
+      }
+    }
+  }
+  return out;
+}
+
+/** One level of `{a,b}` brace expansion, repeated. */
+function braces(p) {
+  const m = /\{([^{}]*,[^{}]*)\}/.exec(p);
+  if (!m) return [p];
+  return m[1].split(',').flatMap((alt) => braces(p.slice(0, m.index) + alt + p.slice(m.index + m[0].length)));
+}
+
+const globSafe = (p) => p.replace(/\[[^\]/]*\]/g, '?');
+
+/** Literal leading directories of a glob path. */
+const globPrefix = (p) => {
+  const segs = p.split('/');
+  const k = segs.findIndex((s) => /[*?]/.test(s));
+  return segs.slice(0, k === -1 ? segs.length : k).join('/');
+};
+
+/** Segments of protected globs and user files; a relative target naming one of them is risky when the cwd is unknown. */
+function riskySegments(ctx) {
+  const set = new Set(['.claude', 'settings.json', 'settings.local.json']);
+  for (const g of ctx.policy.protectedPaths ?? []) {
+    for (const s of g.replaceAll('\\', '/').split('/')) if (s && !/[*?]/.test(s)) set.add(s.toLowerCase());
+  }
+  return set;
+}
+
+/**
+ * Judge one write target.
+ * @param {{path: string, ancestors?: boolean, dest?: boolean, dir?: string}} t
+ * @returns {{hit: string, path: string, ancestors: boolean} | {unsure: string} | null}
+ */
+function judge(t, ctx, baseDir) {
+  const home = homeOf(ctx);
+  for (const raw of braces(expandHome(t.path, home))) {
+    let p = raw;
+    if (t.dir) p = `${expandHome(t.dir, home)}/${p}`;
+    const abs = isAbsolutePath(p);
+    if (!abs && baseDir === null) {
+      const segs = p.replaceAll('\\', '/').split('/');
+      const risky = riskySegments(ctx);
+      if (segs.some((s) => s === '..' || GLOB.test(s) || risky.has(s.toLowerCase()))) return { unsure: raw };
+      continue;
+    }
+    const full = resolvePath(baseDir ?? ctx.cwd, globSafe(p));
+    let ancestors = Boolean(t.ancestors);
+    // a destination directory that is a repo root (or above it) must already exist: only its children are written
+    if (t.dest && ancestors && roots(ctx).some((r) => isAncestorOrSelf(full, r))) ancestors = false;
+    if (/[*?]/.test(full)) {
+      const hitC = candidates(ctx, ancestors).find((c) => globMatch(full, c));
+      if (hitC) return { hit: hitC, path: raw, ancestors };
+      const pre = globPrefix(full);
+      const h = pre && hitAbs(pre, ctx, false);
+      if (h) return { hit: h, path: raw, ancestors };
+      continue;
+    }
+    const h = hitAbs(full, ctx, ancestors);
+    if (h) return { hit: h, path: raw, ancestors };
+  }
+  return null;
+}
+
+function deny(p, how, covers) {
+  const extra = covers && GLOB.test(p) ? ` (it covers "${covers}")` : '';
   return {
     action: 'deny',
     rule: 'protected-file',
-    reason: `${how} protected path "${p}" is not allowed for a worker (it holds hook or policy configuration).`,
+    reason: `${how} protected path "${p}"${extra} is not allowed for a worker (it holds hook or policy configuration).`,
   };
+}
+
+function disableHooks(where) {
+  return {
+    action: 'deny',
+    rule: 'protected-file',
+    reason: `${where} mentions "disableAllHooks", which would switch the gate off.`,
+  };
+}
+
+function unsureDecision(p, ctx) {
+  return {
+    action: ctx.role === 'solo' ? 'ask' : 'deny',
+    rule: 'protected-file',
+    reason: `Writing to "${p}" after a directory change the hook cannot follow; it may be a protected path.`,
+  };
+}
+
+/** The directory relative segment paths resolve against: tracked `cd` cwd when known, null when unknown. */
+function segmentBase(ctx) {
+  if (ctx.segCwd === undefined) return ctx.cwd;
+  if (ctx.segCwd === null) return null;
+  let seg = String(ctx.segCwd);
+  // On Windows, node's path.resolve('/repo', 'x') adds the current drive ("C:\repo\x"); a POSIX-style
+  // session cwd ('/repo', '/c/repo') must keep its own form so it still compares with the roots.
+  const drive = /^([A-Za-z]):[\\/]/.exec(seg);
+  if (drive && process.platform === 'win32' && /^\//.test(String(ctx.cwd ?? ''))) {
+    const cur = /^([A-Za-z]):/.exec(process.cwd())?.[1];
+    if (cur && cur.toLowerCase() === drive[1].toLowerCase()) {
+      const rest = seg.slice(2).replaceAll('\\', '/');
+      const cwd = String(ctx.cwd).replaceAll('\\', '/');
+      if (rest === cwd || rest.startsWith(`${cwd}/`) || cwd.startsWith(`${rest}/`) || rest.split('/')[1] === cwd.split('/')[1]) seg = rest;
+    }
+  }
+  return resolvePath(ctx.cwd, seg);
 }
 
 /**
  * @param {string} toolName
  * @param {object} toolInput
- * @param {{policy: object, cwd: string, repoRoot: string | null}} ctx
+ * @param {{policy: object, cwd: string, repoRoot: string | null, commonRoot?: string | null}} ctx
  */
 export function checkFileTool(toolName, toolInput, ctx) {
   if (!FILE_TOOLS.has(toolName)) return null;
   const p = toolInput?.file_path ?? toolInput?.notebook_path ?? toolInput?.path;
-  return hit(p, ctx) ? deny(p, `${toolName} on`) : null;
+  if (typeof p === 'string' && p !== '') {
+    const abs = resolvePath(ctx.cwd ?? ctx.repoRoot, expandHome(p, homeOf(ctx)));
+    if (hitAbs(abs, ctx, false)) return deny(p, `${toolName} on`);
+  }
+  let text = '';
+  try {
+    text = JSON.stringify(toolInput ?? {});
+  } catch {
+    text = '';
+  }
+  return DISABLE_HOOKS.test(text) ? disableHooks(`${toolName} input`) : null;
 }
 
 /** Targets of `>`, `>>`, `>|`, `&>`, `&>>`, `>&file` outside quotes. */
@@ -125,98 +330,335 @@ function parseArgs(args) {
     const a = args[n];
     const m = /^-([A-Za-z][\w-]*)(?::(.*))?$/.exec(a);
     if (!m) {
-      pos.push(a);
+      if (a !== '--') pos.push(a);
       continue;
     }
     const key = m[1].toLowerCase();
     let val = m[2];
     if (val === undefined && PS_VALUE_PARAMS.has(key) && n + 1 < args.length) val = args[++n];
     if (val !== undefined) (named[key] ??= []).push(val);
+    else (named[key] ??= []).push(true);
   }
   return { named, pos };
 }
 
-const list = (v) => (v ?? []).flatMap((x) => String(x).split(',')).filter(Boolean);
+const list = (v) => (v ?? []).filter((x) => typeof x === 'string').flatMap((x) => x.split(',')).filter(Boolean);
 
-/** Gather `{path, ancestors}` write targets for one segment. */
-function writeTargets(segment) {
-  const targets = redirectTargets(segment).map((path) => ({ path, ancestors: false }));
-  const t = tokens(stripAssignments(segment).rest ?? segment);
+/** Index of the real command after wrappers, env assignments and their flags. */
+function skipWrappers(t) {
   let i = 0;
-  while (i < t.length && (WRAPPERS.has(base(t[i])) || t[i].startsWith('-'))) i++;
+  while (i < t.length) {
+    if (/^[A-Za-z_]\w*=/.test(t[i])) {
+      i++;
+      continue;
+    }
+    const w = WRAPPERS.get(base(t[i]));
+    if (!w) break;
+    i++;
+    let skip = w.skip;
+    while (i < t.length) {
+      const a = t[i];
+      if (a === '--') {
+        i++;
+        break;
+      }
+      if (/^[A-Za-z_]\w*=/.test(a)) {
+        i++;
+        continue;
+      }
+      if (a.startsWith('-')) {
+        const flag = a.split('=')[0];
+        i += w.values.includes(flag) && !a.includes('=') ? 2 : 1;
+        continue;
+      }
+      if (skip > 0) {
+        skip--;
+        i++;
+        continue;
+      }
+      break;
+    }
+  }
+  return i;
+}
+
+/** POSIX positionals, skipping the values of `values` flags; returns {pos, flags, valueOf}. */
+function posix(args, values = []) {
+  const pos = [];
+  const flags = [];
+  const vals = {};
+  let end = false;
+  for (let n = 0; n < args.length; n++) {
+    const a = args[n];
+    if (end || !a.startsWith('-') || a === '-') {
+      pos.push(a);
+      continue;
+    }
+    if (a === '--') {
+      end = true;
+      continue;
+    }
+    flags.push(a);
+    const [flag, eq] = a.split(/=(.*)/s);
+    if (values.includes(flag)) {
+      const v = eq !== undefined ? eq : args[++n];
+      (vals[flag] ??= []).push(v);
+    }
+  }
+  return { pos, flags, vals };
+}
+
+const basenameOf = (p) => String(p).replace(/[?#].*$/, '').replaceAll('\\', '/').replace(/\/+$/, '').split('/').pop();
+
+/** Gather write targets for one segment. */
+function writeTargets(segment) {
+  const targets = redirectTargets(segment).map((path) => ({ path }));
+  const t = tokens(stripAssignments(segment).rest ?? segment);
+  const i = skipWrappers(t);
   const cmd = base(t[i] ?? '');
   const args = t.slice(i + 1);
-  const add = (paths, ancestors = false) => {
-    for (const path of paths) targets.push({ path, ancestors });
+  const add = (paths, opts = {}) => {
+    for (const path of paths) if (typeof path === 'string' && path !== '') targets.push({ path, ...opts });
   };
-  const flagless = args.filter((x) => !x.startsWith('-'));
-
-  if (cmd === 'tee') add(flagless);
-  else if (cmd === 'sed') {
-    if (args.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith('--in-place')) && flagless.length) {
-      add([flagless[flagless.length - 1]]);
+  // copy-like: `sources` land in `dest` itself or in dest/<basename(source)>
+  const copyTo = (dest, sources, recursive) => {
+    if (typeof dest !== 'string' || !dest || isRemote(dest)) return;
+    add([dest], { ancestors: recursive, dest: true });
+    for (const s of sources) {
+      const b = basenameOf(isRemote(s) ? s.slice(s.indexOf(':') + 1) : s);
+      if (b && b !== '.' && b !== '..') add([`${dest.replace(/[\\/]+$/, '')}/${b}`], { ancestors: recursive, dest: true });
     }
-  } else if (cmd === 'dd') {
+  };
+
+  if (cmd === 'tee') add(posix(args, ['-p']).pos);
+  else if (cmd === 'sed') sed(args, add);
+  else if (cmd === 'perl' || cmd === 'ruby') perl(args, add);
+  else if (cmd === 'dd') {
     add(args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3)));
   } else if (cmd === 'git') {
-    git(args, add);
+    git(args, add, copyTo);
+  } else if (cmd === 'curl') {
+    curl(args, add);
+  } else if (cmd === 'wget') {
+    wget(args, add);
+  } else if (COPY_VALUES[cmd]) {
+    const { pos, flags, vals } = posix(args, [...COPY_VALUES[cmd], '-t', '--target-directory']);
+    const recursive = cmd === 'rsync' ? flags.some((f) => /^-[a-zA-Z]*[ra]/.test(f) || f === '--recursive' || f === '--archive')
+      : flags.some((f) => /^-[a-zA-Z]*[rRa]/.test(f) || f === '--recursive' || f === '--archive');
+    const tdir = [...(vals['-t'] ?? []), ...(vals['--target-directory'] ?? [])];
+    if (tdir.length) copyTo(tdir[0], pos, recursive);
+    else if (pos.length >= 2) copyTo(pos[pos.length - 1], pos.slice(0, -1), recursive);
+    else if (cmd === 'ln' && pos.length === 1) copyTo('.', pos, false);
   } else {
     const { named, pos } = parseArgs(args);
-    if (REMOVERS.has(cmd)) add([...pos, ...list(named.path), ...list(named.literalpath)], true);
+    const paths = [...list(named.path), ...list(named.literalpath)];
+    if (REMOVERS.has(cmd)) add([...pos, ...paths], { ancestors: true });
     else if (MOVERS.has(cmd)) {
-      add([...pos, ...list(named.path), ...list(named.literalpath), ...list(named.destination)], true);
-    } else if (COPIERS.has(cmd)) {
-      if (named.destination) add(list(named.destination));
-      else if (pos.length + list(named.path).length >= 2) add([pos[pos.length - 1]]);
-    } else if (LAST_POSITIONAL.has(cmd)) {
-      if (pos.length) add([pos[pos.length - 1]]);
+      const dest = list(named.destination)[0] ?? (pos.length >= 2 ? pos[pos.length - 1] : undefined);
+      const sources = named.destination ? [...pos, ...paths] : [...pos.slice(0, dest === undefined ? pos.length : -1), ...paths];
+      add(sources, { ancestors: true });
+      copyTo(dest, sources, true);
+    } else if (RENAMERS.has(cmd)) {
+      const src = paths[0] ?? pos[0];
+      const name = list(named.newname)[0] ?? (paths.length ? pos[0] : pos[1]);
+      add([src], { ancestors: true });
+      if (src && name) {
+        const dir = String(src).replaceAll('\\', '/').replace(/\/+$/, '').split('/').slice(0, -1).join('/');
+        add([dir ? `${dir}/${name}` : name], { ancestors: true, dest: true });
+      }
+    } else if (cmd === 'copy-item' || cmd === 'cpi' || cmd === 'copy') {
+      const dest = list(named.destination)[0] ?? (pos.length + paths.length >= 2 ? pos[pos.length - 1] : undefined);
+      const sources = named.destination ? [...pos, ...paths] : [...paths, ...pos.slice(0, -1)];
+      copyTo(dest, sources, Boolean(named.recurse || named.r));
     } else if (EVERY_POSITIONAL.has(cmd)) add(pos);
     else if (cmd === 'new-item' || cmd === 'ni') {
-      const paths = [...pos.slice(0, 1), ...list(named.path)];
+      const ps = [...pos.slice(0, 1), ...paths];
       const name = list(named.name)[0];
-      add(name ? paths.map((p) => `${p}/${name}`) : paths);
+      add(name ? ps.map((p) => `${p}/${name}`) : ps);
     } else if (FIRST_POSITIONAL.has(cmd)) {
-      const p = [...list(named.path), ...list(named.filepath), ...list(named.literalpath)];
+      const p = [...paths, ...list(named.filepath)];
       add(p.length ? p : pos.slice(0, 1));
     }
   }
+  dotnet(segment, add);
   return targets;
 }
 
-/** `git checkout [ref] -- <path>` and `git restore <path>` overwrite the working-tree file. */
-function git(args, add) {
+/** `[IO.File]::WriteAllText('x', ...)`, `[System.IO.Directory]::Delete('x')` and friends. */
+function dotnet(segment, add) {
+  const re = /\[(?:System\.)?IO\.(File|Directory)\]::(\w+)\s*\(([^)]*)\)/gi;
+  for (const m of segment.matchAll(re)) {
+    const method = m[2].toLowerCase();
+    if (/^(read|exists|get|open(read|text)$|enumerate)/.test(method)) continue;
+    const argsQ = [...m[3].matchAll(/'((?:[^']|'')*)'|"((?:[^"\\]|\\.)*)"/g)].map((x) => (x[1] ?? x[2]).replaceAll("''", "'"));
+    if (!argsQ.length) continue;
+    if (method === 'copy') add(argsQ.slice(1, 2));
+    else if (method === 'move' || method === 'replace') add(argsQ.slice(0, 2), { ancestors: true });
+    else if (method === 'delete') add(argsQ.slice(0, 1), { ancestors: true });
+    else add(argsQ.slice(0, 1));
+  }
+}
+
+function sed(args, add) {
+  const { pos, flags } = posix(args, ['-e', '--expression', '-f', '--file', '-l', '--line-length']);
+  if (!flags.some((a) => /^-[a-zA-Z]*i/.test(a) || a.startsWith('--in-place'))) return;
+  const scripted = flags.some((a) => /^(-e|--expression|-f|--file)/.test(a) || /^-[a-zA-Z]*[ef]$/.test(a));
+  add(scripted ? pos : pos.slice(1));
+}
+
+function perl(args, add) {
+  let inplace = false;
+  let code = false;
+  const pos = [];
+  for (let n = 0; n < args.length; n++) {
+    const a = args[n];
+    if (a === '--') {
+      pos.push(...args.slice(n + 1));
+      break;
+    }
+    if (a.startsWith('-') && a.length > 1) {
+      if (/^-[a-zA-Z]*i/.test(a)) inplace = true;
+      if (/^-[a-zA-Z]*[eE]$/.test(a)) {
+        code = true;
+        n++;
+      } else if (/^-[IMm]$/.test(a)) n++;
+      continue;
+    }
+    pos.push(a);
+  }
+  if (inplace) add(code ? pos : pos.slice(1));
+}
+
+function curl(args, add) {
+  let remoteName = false;
+  let dir = '';
+  const urls = [];
+  for (let n = 0; n < args.length; n++) {
+    const a = args[n];
+    if (a === '-o' || a === '--output') add([args[++n]].filter((x) => x !== '-'));
+    else if (a.startsWith('--output=')) add([a.slice(9)].filter((x) => x !== '-'));
+    else if (a === '--output-dir') dir = args[++n] ?? '';
+    else if (a === '-O' || a === '--remote-name' || a === '--remote-name-all') remoteName = true;
+    else if (/^-[a-zA-Z]/.test(a)) {
+      // short-option cluster: -sSLo FILE, -oFILE, -sSO
+      const m = /^-([a-np-zA-Z]*)o(.*)$/s.exec(a);
+      if (/^-[a-zA-Z]*O/.test(a) && !m) remoteName = true;
+      if (m) {
+        if (m[1].includes('O')) remoteName = true;
+        const v = m[2] !== '' ? m[2] : args[++n];
+        add([v].filter((x) => x !== '-'));
+      }
+    } else if (!a.startsWith('-')) urls.push(a);
+  }
+  if (remoteName) add(urls.map((u) => basenameOf(u.replace(/^\w+:\/\/[^/]*/, ''))).filter(Boolean).map((b) => (dir ? `${dir}/${b}` : b)));
+}
+
+function wget(args, add) {
+  let out = null;
+  let prefix = '';
+  let spider = false;
+  const urls = [];
+  for (let n = 0; n < args.length; n++) {
+    const a = args[n];
+    if (a === '-O' || a === '--output-document') out = args[++n] ?? '';
+    else if (a.startsWith('--output-document=')) out = a.slice(18);
+    else if (a === '-P' || a === '--directory-prefix') prefix = args[++n] ?? '';
+    else if (a.startsWith('--directory-prefix=')) prefix = a.slice(19);
+    else if (a === '--spider') spider = true;
+    else if (/^-[a-zA-Z]/.test(a)) {
+      // short-option cluster: -qO FILE, -qOFILE, -OFILE
+      const m = /^-([a-zA-NP-Z]*)O(.*)$/s.exec(a);
+      if (m) out = m[2] !== '' ? m[2] : (args[++n] ?? '');
+      const p = /^-([a-zA-OQ-Z]*)P(.*)$/s.exec(a);
+      if (!m && p) prefix = p[2] !== '' ? p[2] : (args[++n] ?? '');
+    } else if (!a.startsWith('-')) urls.push(a);
+  }
+  if (spider) return;
+  if (out !== null) {
+    if (out !== '-') add([out]);
+    return;
+  }
+  for (const u of urls) {
+    const b = basenameOf(u.replace(/^\w+:\/\/[^/]*/, '')) || 'index.html';
+    add([prefix ? `${prefix}/${b}` : b]);
+  }
+}
+
+/** git subcommands that write, move or delete working-tree files. */
+function git(args, add, copyTo) {
   let k = 0;
-  while (k < args.length && args[k].startsWith('-')) k += args[k] === '-C' || args[k] === '-c' ? 2 : 1;
+  const dirs = [];
+  while (k < args.length && args[k].startsWith('-')) {
+    if (args[k] === '-C') dirs.push(args[k + 1]);
+    k += args[k] === '-C' || args[k] === '-c' ? 2 : 1;
+  }
+  const dir = dirs.filter(Boolean).join('/') || undefined;
+  const at = (opts = {}) => ({ ...opts, ...(dir ? { dir } : {}) });
+  const put = (paths, opts) => {
+    for (const p of paths) add([p], at(opts));
+  };
   const sub = (args[k] ?? '').toLowerCase();
   const rest = args.slice(k + 1);
+  const dd = rest.indexOf('--');
   if (sub === 'restore') {
     const paths = [];
     for (let n = 0; n < rest.length; n++) {
       if (rest[n] === '-s' || rest[n] === '--source') n++;
       else if (!rest[n].startsWith('-')) paths.push(rest[n]);
     }
-    add(paths);
+    put(paths);
   } else if (sub === 'checkout') {
-    const d = rest.indexOf('--');
-    if (d >= 0) add(rest.slice(d + 1));
+    if (dd >= 0) put(rest.slice(dd + 1));
+    else {
+      const pos = [];
+      for (let n = 0; n < rest.length; n++) {
+        if (/^(-b|-B|--orphan|--conflict)$/.test(rest[n])) n++;
+        else if (!rest[n].startsWith('-')) pos.push(rest[n]);
+      }
+      put(pos); // the tree-ish is checked too; a branch name never matches a protected path
+    }
+  } else if (sub === 'rm') {
+    put(rest.filter((a) => !a.startsWith('-')), { ancestors: true });
+  } else if (sub === 'mv') {
+    const pos = rest.filter((a) => !a.startsWith('-'));
+    put(pos.slice(0, -1), { ancestors: true });
+    if (pos.length >= 2) {
+      const dest = pos[pos.length - 1];
+      put([dest], { ancestors: true, dest: true });
+      for (const s of pos.slice(0, -1)) put([`${dest.replace(/[\\/]+$/, '')}/${basenameOf(s)}`], { ancestors: true, dest: true });
+    }
   }
+  void copyTo;
 }
 
 /**
  * @param {string} segment
- * @param {{policy: object, cwd: string, repoRoot: string | null}} ctx
+ * @param {{policy: object, cwd: string, repoRoot: string | null, commonRoot?: string | null, segCwd?: string | null}} ctx
  */
 export function checkBashWrite(segment, ctx) {
-  for (const { path, ancestors } of writeTargets(segment)) {
-    if (hit(path, ctx, ancestors)) return deny(path, ancestors ? 'Writing to, moving or deleting' : 'Writing to');
+  const targets = writeTargets(String(segment ?? ''));
+  // a command that writes anything while mentioning disableAllHooks (reads such as grep pass)
+  if (targets.length && DISABLE_HOOKS.test(String(segment ?? ''))) return disableHooks('Command');
+  const baseDir = segmentBase(ctx);
+  let pending = null;
+  for (const t of targets) {
+    const j = judge(t, ctx, baseDir);
+    if (!j) continue;
+    if (j.hit) return deny(j.path, j.ancestors ? 'Writing to, moving or deleting' : 'Writing to', j.hit);
+    pending ??= j.unsure;
   }
-  return null;
+  return pending !== null ? unsureDecision(pending, ctx) : null;
 }
 
 /** Redirections over the whole command line (the segmenter splits `>|`, so segments alone miss it). */
 export function checkRedirects(command, ctx) {
-  for (const path of redirectTargets(String(command ?? ''))) {
-    if (hit(path, ctx)) return deny(path, 'Writing to');
+  const s = String(command ?? '');
+  const targets = redirectTargets(s).map((path) => ({ path }));
+  // .NET calls span parentheses the segmenter splits on, so read them from the whole line too
+  dotnet(s, (paths, opts = {}) => targets.push(...paths.map((path) => ({ path, ...opts }))));
+  for (const t of targets) {
+    const j = judge(t, ctx, ctx.cwd);
+    if (j?.hit) return deny(t.path, j.ancestors ? 'Writing to, moving or deleting' : 'Writing to');
   }
   return null;
 }

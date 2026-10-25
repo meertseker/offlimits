@@ -27,6 +27,9 @@ test('offlimits skill', () => {
   assert.match(body, /explain\.mjs/);
   assert.match(body, /status\.mjs/);
   assert.match(body, /CLAUDE_PLUGIN_ROOT/);
+  assert.ok(!body.includes('—') && !fm.description.includes('—'), 'no em dash');
+  assert.ok(body.indexOf('CLAUDE_PLUGIN_ROOT') < body.indexOf('skills/'), 'CLAUDE_PLUGIN_ROOT is mentioned first');
+  assert.match(body, /parent of the `skills\/` directory/);
 });
 
 test('offlimits-roles skill', () => {

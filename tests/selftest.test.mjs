@@ -12,10 +12,17 @@ const node = (args, opts = {}) => spawnSync(process.execPath, args, { encoding: 
 
 test('self-test --json passes every fixture through the real gate', () => {
   const r = node([script('selftest.mjs'), '--json'], { cwd: ROOT });
-  assert.equal(r.status, 0, r.stdout + r.stderr);
   const results = JSON.parse(r.stdout);
   assert.ok(results.length >= 100);
-  for (const x of results) assert.equal(x.ok, true, `${x.name}: expected ${x.expect} got ${x.got}`);
+  // every tests/fixtures/*.json file is loaded
+  const names = new Set(results.map((x) => x.name));
+  const dir = path.join(ROOT, 'tests', 'fixtures');
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json'))) {
+    for (const c of JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))) assert.ok(names.has(c.name), `${f}: ${c.name} not run`);
+  }
+  const bad = results.filter((x) => !x.ok).map((x) => `${x.name}: expected ${x.expect} got ${x.got}`);
+  assert.deepEqual(bad, []);
+  assert.equal(r.status, 0, r.stderr);
 });
 
 test('self-test table prints a summary line', () => {
@@ -34,7 +41,8 @@ function repo() {
 test('explain prints a deny decision', () => {
   const r = node([script('explain.mjs'), '--', 'git', 'push', 'origin', 'main'], { cwd: repo() });
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /^DECISION: deny \(git-push-protected\) — /);
+  assert.match(r.stdout, /^DECISION: deny \(git-push-protected\) - /);
+  assert.ok(!r.stdout.includes('—'), 'no em dash');
 });
 
 test('explain prints allow', () => {
@@ -43,12 +51,18 @@ test('explain prints allow', () => {
   assert.equal(r.stdout.trim(), 'DECISION: allow');
 });
 
-test('explain honours OFFLIMITS_ROLE', () => {
+test('explain honours OFFLIMITS_ROLE: worker and solo decide differently', () => {
   const dir = repo();
-  const env = { ...process.env, OFFLIMITS_ROLE: 'worker' };
-  const r = node([script('explain.mjs'), '--', 'git push origin feat/x'], { cwd: dir, env });
-  assert.equal(r.status, 0);
-  assert.match(r.stdout, /^DECISION: /);
+  const solo = { ...process.env };
+  delete solo.OFFLIMITS_ROLE;
+  const worker = { ...solo, OFFLIMITS_ROLE: 'worker' };
+  const cmd = ['--', 'npx', 'prisma', 'migrate', 'deploy'];
+  const w = node([script('explain.mjs'), ...cmd], { cwd: dir, env: worker });
+  const s = node([script('explain.mjs'), ...cmd], { cwd: dir, env: solo });
+  assert.equal(w.status, 0);
+  assert.equal(s.status, 0);
+  assert.match(w.stdout, /^DECISION: deny \(db-migrate\) - /);
+  assert.match(s.stdout, /^DECISION: ask \(db-migrate\) - /);
 });
 
 test('status reports role, policy, branches, production and rules', () => {

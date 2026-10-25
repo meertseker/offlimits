@@ -3,6 +3,16 @@ import path from 'node:path';
 /** Slash-normalise one path: `\` to `/`, Git Bash `/c/x` to `C:/x`, upper-case drive, no trailing slash. */
 function canon(p, platform) {
   let s = String(p).replace(/\\/g, '/');
+  // Win32 device / long-path prefixes: //?/C:/x, //./C:/x, //?/UNC/server/share
+  s = s.replace(/^\/\/[?.]\/UNC\//i, '//').replace(/^\/\/[?.]\//, '');
+  // Windows ignores trailing dots and spaces in a segment, and the default ::$DATA stream
+  s = s
+    .split('/')
+    .map((seg) => {
+      const t = seg.replace(/::\$DATA$/i, '').replace(/[. ]+$/, '');
+      return seg === '.' || seg === '..' || t === '' ? seg.replace(/::\$DATA$/i, '') : t;
+    })
+    .join('/');
   const bash = /^\/([a-zA-Z])(?=\/|$)(.*)$/.exec(s);
   if (bash && platform === 'win32') s = `${bash[1]}:${bash[2] || '/'}`;
   const drive = /^([a-zA-Z]):(?=\/|$)/.exec(s);
@@ -15,10 +25,53 @@ function isAbs(s) {
 }
 
 function clean(s) {
+  const d = /^([A-Za-z]:)(\/.*)?$/.exec(s);
+  if (d) {
+    // normalise below the drive so "C:/.." stays "C:/"
+    const rest = path.posix.normalize(d[2] || '/');
+    return rest === '/' ? `${d[1]}/` : `${d[1]}${rest.endsWith('/') ? rest.slice(0, -1) : rest}`;
+  }
   let n = path.posix.normalize(s);
   if (n.length > 1 && n.endsWith('/')) n = n.slice(0, -1);
-  // a bare drive such as "C:" must keep its slash form
-  return /^[A-Za-z]:$/.test(n) ? `${n}/` : n;
+  return n;
+}
+
+/**
+ * Absolute, canonical form of `p`, resolved against `base` when relative.
+ * @param {string} base
+ * @param {string} p
+ * @param {string} [platform]
+ */
+export function resolvePath(base, p, platform = process.platform) {
+  const c = canon(p, platform);
+  if (isAbs(c)) return clean(c);
+  return clean(`${clean(canon(base, platform))}/${c}`);
+}
+
+/** True when `p` is absolute (after canonicalisation). */
+export function isAbsolutePath(p, platform = process.platform) {
+  return isAbs(canon(p, platform));
+}
+
+/** True when `a` equals `b` or is a directory above it. Both are canonicalised. */
+export function isAncestorOrSelf(a, b, platform = process.platform) {
+  const fold = ci(platform) ? (x) => x.toLowerCase() : (x) => x;
+  const fa = fold(clean(canon(a, platform)));
+  const fb = fold(clean(canon(b, platform)));
+  if (fa === fb) return true;
+  const prefix = fa.endsWith('/') ? fa : `${fa}/`;
+  return fb.startsWith(prefix);
+}
+
+/**
+ * Replace a leading `~`, `$HOME`, `${HOME}`, `$env:HOME`, `$env:USERPROFILE`, `%USERPROFILE%` with `home`.
+ * @param {string} p
+ * @param {string} home
+ */
+export function expandHome(p, home) {
+  const s = String(p);
+  const m = /^(~|\$HOME\b|\$\{HOME\}|\$env:(?:HOME|USERPROFILE)\b|%USERPROFILE%|%HOMEDRIVE%%HOMEPATH%)(?=$|[\\/])/i.exec(s);
+  return m && home ? home + s.slice(m[0].length) : s;
 }
 
 /**

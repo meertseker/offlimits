@@ -1,16 +1,40 @@
 // Decision entry point: dispatches a hook input to the shell or MCP rules.
 
-import { expand } from './shell.mjs';
-import { checkSegment } from './rules/shell-rules.mjs';
+import { expandWithState } from './shell.mjs';
+import { checkSegment, resolveDir, SHELL_RULE_IDS } from './rules/shell-rules.mjs';
 import { checkMcp } from './rules/mcp-rules.mjs';
 import { checkFileTool, checkBashWrite, checkRedirects } from './rules/file-rules.mjs';
 
 const ALLOW = Object.freeze({ action: 'allow' });
 
+/** Every rule id a decision can carry. */
+export const RULE_IDS = Object.freeze([
+  ...new Set([
+    ...SHELL_RULE_IDS,
+    'protected-file',
+    'supabase-mcp',
+    'vercel-mcp',
+    'mcp-write',
+    'github-mcp',
+    'mcp-destructive',
+  ]),
+]);
+
+/** Absolute directory for a tracked segment cwd ('.' = ctx.cwd, null = unknown). */
+function segmentCwd(base, cwd) {
+  if (cwd === '.') return base;
+  if (cwd === null) return null;
+  return resolveDir(base, cwd);
+}
+
 /**
  * @param {{tool_name?: string, tool_input?: object}} input
  * @param {{role: 'coordinator'|'worker'|'solo', policy: object, currentBranch: (dir: string) => string, cwd: string, repoRoot: string | null}} ctx
  * @returns {{action: 'allow'|'deny'|'ask', rule?: string, reason?: string}}
+ *
+ * For shell tools every segment is checked with a ctx that also carries
+ * `segCwd` (absolute directory the segment runs in, null when unknown),
+ * `segEnvs` (variables set by earlier segments) and `heads` (branches checked out earlier).
  */
 export function decide(input, ctx) {
   if (ctx.role === 'coordinator') return ALLOW;
@@ -19,9 +43,11 @@ export function decide(input, ctx) {
 
   if (tool === 'Bash' || tool === 'PowerShell') {
     const redirect = checkRedirects(toolInput.command, ctx);
-    for (const segment of expand(toolInput.command)) {
-      const d = checkSegment(segment, ctx) ?? checkBashWrite(segment, ctx);
-      if (d) return d;
+    const heads = new Map();
+    for (const { segment, cwd, envs } of expandWithState(toolInput.command)) {
+      const sctx = { ...ctx, segCwd: segmentCwd(ctx.cwd, cwd), segEnvs: envs, heads };
+      const d = checkSegment(segment, sctx) ?? checkBashWrite(segment, sctx);
+      if (d) return { action: d.action, rule: d.rule, reason: d.reason };
     }
     return redirect ?? ALLOW;
   }

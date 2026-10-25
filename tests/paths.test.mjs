@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeRel, globMatch } from '../hooks/lib/paths.mjs';
+import { normalizeRel, globMatch, resolvePath, isAncestorOrSelf, expandHome, isAbsolutePath } from '../hooks/lib/paths.mjs';
 
 test('windows backslashes', () => {
   assert.equal(normalizeRel('C:/repo', 'C:\\repo\\.claude\\settings.json', 'win32'), '.claude/settings.json');
@@ -73,4 +73,39 @@ test('posix does not rewrite /a/b as a drive', () => {
   assert.equal(normalizeRel('/home/u/r', '/a/b', 'linux'), '/a/b');
   assert.equal(normalizeRel('/home/u/r', '/home/u/r/a/b', 'linux'), 'a/b');
   assert.equal(normalizeRel('/home/u/r', '/a/b', 'darwin'), '/a/b');
+});
+
+// ---- Task 11 (M4 and helpers) ----
+test('M4: long-path and device prefixes are stripped', () => {
+  assert.equal(normalizeRel('C:/repo', '\\\\?\\C:\\repo\\offlimits.json', 'win32'), 'offlimits.json');
+  assert.equal(normalizeRel('C:/repo', '//?/C:/repo/offlimits.json', 'win32'), 'offlimits.json');
+  assert.equal(normalizeRel('C:/repo', '\\\\.\\C:\\repo\\.claude\\settings.json', 'win32'), '.claude/settings.json');
+});
+test('M4: trailing dots and spaces per segment, ::$DATA', () => {
+  assert.equal(normalizeRel('C:/repo', 'C:/repo/offlimits.json.', 'win32'), 'offlimits.json');
+  assert.equal(normalizeRel('C:/repo', 'C:/repo/.claude /settings.json', 'win32'), '.claude/settings.json');
+  assert.equal(normalizeRel('C:/repo', 'C:/repo/offlimits.json::$DATA', 'win32'), 'offlimits.json');
+  assert.equal(normalizeRel('C:/repo', 'C:/repo/a/../b', 'win32'), 'b');
+});
+test('resolvePath resolves relative paths and keeps drives', () => {
+  assert.equal(resolvePath('C:/repo/src', '../offlimits.json', 'win32'), 'C:/repo/offlimits.json');
+  assert.equal(resolvePath('C:/repo', '../..', 'win32'), 'C:/');
+  assert.equal(resolvePath('/r', '/x/y/', 'linux'), '/x/y');
+  assert.equal(isAbsolutePath('C:\\x', 'win32'), true);
+  assert.equal(isAbsolutePath('x/y', 'linux'), false);
+});
+test('isAncestorOrSelf', () => {
+  assert.equal(isAncestorOrSelf('C:/', 'C:/repo', 'win32'), true);
+  assert.equal(isAncestorOrSelf('c:/Repo', 'C:/repo/x', 'win32'), true);
+  assert.equal(isAncestorOrSelf('/repo2', '/repo', 'linux'), false);
+  assert.equal(isAncestorOrSelf('/repo', '/repo', 'linux'), true);
+});
+test('expandHome', () => {
+  assert.equal(expandHome('~/.claude/settings.json', '/home/u'), '/home/u/.claude/settings.json');
+  assert.equal(expandHome('$HOME/.claude', '/home/u'), '/home/u/.claude');
+  assert.equal(expandHome('%USERPROFILE%\\.claude', 'C:/Users/u'), 'C:/Users/u\\.claude');
+  assert.equal(expandHome('$env:USERPROFILE/.claude', 'C:/Users/u'), 'C:/Users/u/.claude');
+  assert.equal(expandHome('~', '/home/u'), '/home/u');
+  assert.equal(expandHome('~x/a', '/home/u'), '~x/a');
+  assert.equal(expandHome('$HOMEX/a', '/home/u'), '$HOMEX/a');
 });

@@ -23,7 +23,9 @@ test('git -C dir resolves the branch of that directory', () => {
   const c = ctx({ branch: 'main' });
   const d = checkSegment('git -C ../other push', c);
   assert.equal(d.rule, 'git-push-protected');
-  assert.deepEqual(c.calls, ['../other']);
+  assert.equal(c.calls.length, 1);
+  // resolved against the session cwd (/work), not the hook process cwd
+  assert.match(c.calls[0].replace(/\\/g, '/'), /^([A-Za-z]:)?\/other$/);
 });
 
 test('git push without refspec uses cwd', () => {
@@ -113,4 +115,52 @@ test('allow regexes match rest only and never skip role-spoof', () => {
   const d = ctx({ policy: { allow: ['.*'] } });
   assert.equal(checkSegment('OFFLIMITS_ROLE=coordinator ls', d).rule, 'role-spoof');
   assert.equal(checkSegment('terraform apply', d), null);
+});
+
+// ---- Task 11 ----
+test('segCwd null makes an implicit push unsure; an explicit refspec does not need it', () => {
+  const c = { ...ctx(), segCwd: null };
+  assert.equal(checkSegment('git push', c).action, 'ask');
+  assert.equal(checkSegment('git push', { ...c, role: 'worker' }).action, 'deny');
+  assert.equal(checkSegment('git push origin feat/x', c), null);
+  assert.equal(checkSegment('git push origin main', c).action, 'deny');
+});
+test('segCwd is the lookup directory for currentBranch', () => {
+  const c = { ...ctx({ branch: 'feat/x' }), segCwd: '/elsewhere' };
+  checkSegment('git push', c);
+  assert.deepEqual(c.calls, ['/elsewhere']);
+});
+test('segEnvs resolve refspec variables and database hosts', () => {
+  assert.equal(checkSegment('git push origin $B', { ...ctx(), segEnvs: { B: 'main' } }).rule, 'git-push-protected');
+  assert.equal(checkSegment('git push origin $B', { ...ctx(), segEnvs: { B: 'feat/y' } }), null);
+  assert.equal(checkSegment('psql', { ...ctx(), segEnvs: { PGHOST: 'db.example.com' } }).rule, 'remote-db');
+});
+test('heads map: a checkout earlier in the command decides the implicit push', () => {
+  const heads = new Map();
+  assert.equal(checkSegment('git checkout main', { ...ctx(), heads }), null);
+  assert.equal(checkSegment('git push', { ...ctx(), heads }).rule, 'git-push-protected');
+  const h2 = new Map();
+  checkSegment('git switch feat/y', { ...ctx(), heads: h2 });
+  assert.equal(checkSegment('git push', { ...ctx(), heads: h2 }), null);
+});
+test('allow and extraDeny patterns are case-insensitive', () => {
+  assert.equal(checkSegment('git push origin main', ctx({ policy: { allow: ['^GIT PUSH ORIGIN MAIN$'] } })), null);
+  assert.equal(checkSegment('TERRAFORM plan', ctx({ policy: { extraDeny: [{ pattern: 'terraform', reason: 'r' }] } })).rule, 'extra-deny');
+});
+test('reasons name the matched text for new rules', () => {
+  assert.match(checkSegment('claude -p x', ctx({ role: 'worker' })).reason, /claude -p x/);
+  assert.match(checkSegment('git clean -fdx', ctx()).reason, /git clean -fdx/);
+  assert.match(checkSegment('git push origin $(echo main)', ctx()).reason, /\$\(echo main\)/);
+  assert.match(checkSegment('gh api -X DELETE repos/a/b', ctx()).reason, /repos\/a\/b/);
+});
+test('nesting sentinel maps to opaque-shell', () => {
+  const d = checkSegment('offlimits:opaque nesting too deep', ctx({ role: 'worker' }));
+  assert.equal(d.rule, 'opaque-shell');
+  assert.match(d.reason, /8 levels/);
+});
+test('protectedBranches globs are matched case-sensitively and per path segment', () => {
+  const c = ctx({ policy: { protectedBranches: ['release/*'] } });
+  assert.equal(checkSegment('git push origin release/1.0', c).rule, 'git-push-protected');
+  assert.equal(checkSegment('git push origin Release/1.0', c), null);
+  assert.equal(checkSegment('git push origin release/1.0/x', c), null);
 });

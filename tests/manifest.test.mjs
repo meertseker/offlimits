@@ -43,7 +43,7 @@ test('example policy holds spec defaults and a filled production block', () => {
   assert.ok(example.production.hosts.length > 0);
   assert.equal(example.extraDeny.length, 1);
   assert.ok(example.extraDeny[0].pattern && example.extraDeny[0].reason);
-  assert.equal(example.allow.length, 1);
+  assert.equal(example.allow.length, 2);
   assert.deepEqual(example.trustedAgentTypes, []);
   assert.equal(example.roleEnv, 'OFFLIMITS_ROLE');
   assert.equal(example.onError, 'auto');

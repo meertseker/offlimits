@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { segments, unwrap, stripAssignments, tokens, expand, OPAQUE_PREFIX } from '../hooks/lib/shell.mjs';
+import { segments, unwrap, stripAssignments, tokens, tokenize, expand, expandWithState, OPAQUE_PREFIX, OPAQUE_DEEP } from '../hooks/lib/shell.mjs';
 
 test('segments splits on && outside quotes', () => {
   assert.equal(segments('npm test && git push origin main').length, 2);
@@ -146,4 +146,57 @@ test('misc: &>, zsh, -lc, exec/env/time prefixes', () => {
   assert.ok(unwrap(`env X=1 sh -c "${FP}"`).includes(FP));
   assert.ok(unwrap(`exec bash -c "${FP}"`).includes(FP));
   assert.ok(unwrap(`time bash -c "${FP}"`).includes(FP));
+});
+
+// ---- Task 11: stateful expansion, escapes, carriers ----
+const at = (list, seg) => list.find((x) => x.segment === seg);
+const BSL = String.fromCharCode(92);
+
+test('expandWithState tracks cd, pushd/popd and Set-Location', () => {
+  assert.equal(at(expandWithState('cd ../m && git push'), 'git push').cwd, '../m');
+  assert.equal(at(expandWithState('cd /srv/app; cd sub; git push'), 'git push').cwd, '/srv/app/sub');
+  assert.equal(at(expandWithState('git push'), 'git push').cwd, '.');
+  assert.equal(at(expandWithState('cd - && git push'), 'git push').cwd, null);
+  assert.equal(at(expandWithState('pushd ../m; popd; git push'), 'git push').cwd, null);
+  assert.equal(at(expandWithState('cd $WT && git push'), 'git push').cwd, null);
+  assert.equal(at(expandWithState(`Set-Location -Path ..${BSL}m; git push`), 'git push').cwd, '../m');
+  assert.equal(at(expandWithState('cd && git push'), 'git push').cwd, '~');
+});
+test('expandWithState restores the cwd after a parenthesised subshell', () => {
+  assert.equal(at(expandWithState('(cd x && npm test); git push'), 'git push').cwd, '.');
+  assert.equal(at(expandWithState('(cd x && npm test); git push'), 'npm test').cwd, 'x');
+});
+test('expandWithState accumulates variables from earlier segments only', () => {
+  const r = expandWithState('b=main; export C=1 D=2; $env:E = "3"; $f = "4"; set G=5; F=9 npm test; git push origin $b');
+  assert.deepEqual(at(r, 'git push origin $b').envs, { b: 'main', C: '1', D: '2', E: '3', f: '4', G: '5' });
+  assert.deepEqual(at(r, 'b=main').envs, {});
+  assert.deepEqual(at(expandWithState('export X=1; unset X; ls'), 'ls').envs, {});
+});
+test('expandWithState gives nested bodies the outer state', () => {
+  assert.equal(at(expandWithState('cd ../m && bash -c "git push"'), 'git push').cwd, '../m');
+  assert.equal(at(expandWithState('git submodule foreach git push'), 'git push').cwd, null);
+});
+test('expandWithState emits the depth sentinel instead of stopping silently', () => {
+  let c = 'npm test';
+  for (let i = 0; i < 12; i++) c = `bash -c ${JSON.stringify(c)}`;
+  assert.ok(expandWithState(c).some((x) => x.segment === OPAQUE_DEEP));
+  assert.ok(expand(c).includes(OPAQUE_DEEP));
+  assert.ok(!expand(`bash -c "bash -c 'npm test'"`).includes(OPAQUE_DEEP));
+});
+test('tokenize modes: bash backslash, ANSI-C quoting, PowerShell backtick', () => {
+  assert.deepEqual(tokens(`git push origin m${BSL}ain`, 'bash'), ['git', 'push', 'origin', 'main']);
+  assert.deepEqual(tokens(`cd C:${BSL}repo`), ['cd', `C:${BSL}repo`]);
+  assert.deepEqual(tokens(`git push origin $'${BSL}x6dain'`), ['git', 'push', 'origin', 'main']);
+  assert.deepEqual(tokens(`echo $'a${BSL}nb'`), ['echo', 'a\nb']);
+  assert.deepEqual(tokens('git push origin ma`in', 'ps'), ['git', 'push', 'origin', 'main']);
+  assert.deepEqual(tokens('git push origin $(git branch --show-current)'), ['git', 'push', 'origin', '$(git branch --show-current)']);
+  assert.deepEqual(tokenize('a "b c" d').raws, ['a', '"b c"', 'd']);
+});
+test('carriers: Invoke-Expression, Start-Process, Invoke-Command, find -exec, flock -c, env -S and runners', () => {
+  for (const c of ['Invoke-Expression "git push"', 'iex "git push"', 'Start-Process git -ArgumentList "push"',
+    "Start-Process -FilePath git -ArgumentList 'push' -Wait", 'Invoke-Command -ScriptBlock { git push }',
+    `find . -exec git push ${BSL};`, 'flock /tmp/l -c "git push"', 'env -S "git push"', 'watch "git push"',
+    'cross-env-shell "git push"', "npx -c 'git push'", "su -c 'git push'", "doppler run --command 'git push'"]) {
+    assert.ok(expand(c).includes('git push'), c);
+  }
 });
