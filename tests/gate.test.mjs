@@ -1,0 +1,97 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const GATE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'gate.mjs');
+
+function tmpRepo(policy) {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-gate-')));
+  execFileSync('git', ['init', '-q', '-b', 'feat/x'], { cwd: dir });
+  if (policy) fs.writeFileSync(path.join(dir, 'offlimits.json'), JSON.stringify(policy));
+  return dir;
+}
+
+function run(dir, input, role) {
+  const env = { ...process.env };
+  delete env.OFFLIMITS_ROLE;
+  if (role) env.OFFLIMITS_ROLE = role;
+  const stdin = typeof input === 'string' ? input : JSON.stringify({ cwd: dir, hook_event_name: 'PreToolUse', ...input });
+  return spawnSync(process.execPath, [GATE], { input: stdin, env, cwd: dir, encoding: 'utf8' });
+}
+
+const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
+const logLines = (dir) => {
+  const f = path.join(dir, '.offlimits', 'log.jsonl');
+  return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+};
+
+test('worker push to main is blocked', () => {
+  const dir = tmpRepo();
+  const r = run(dir, bash('git push origin main'), 'worker');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /rule: git-push-protected/);
+  const log = logLines(dir);
+  assert.equal(log.length, 1);
+  assert.equal(log[0].decision, 'deny');
+  assert.equal(log[0].role, 'worker');
+});
+
+test('worker npm test is allowed silently', () => {
+  const r = run(tmpRepo(), bash('npm test'), 'worker');
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+});
+
+test('solo supabase write asks', () => {
+  const dir = tmpRepo();
+  const r = run(dir, { tool_name: 'mcp__supabase__execute_sql', tool_input: { query: 'insert into t values (1)' } });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(out.hookSpecificOutput.permissionDecision, 'ask');
+  assert.equal(logLines(dir)[0].decision, 'ask');
+});
+
+test('coordinator push to main passes', () => {
+  const r = run(tmpRepo(), bash('git push origin main'), 'coordinator');
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+});
+
+test('unparseable stdin with a role set blocks', () => {
+  const r = run(tmpRepo(), 'not json', 'worker');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /^offlimits: hook error, blocking because a role is set/);
+});
+
+test('unparseable stdin for coordinator passes', () => {
+  assert.equal(run(tmpRepo(), 'not json', 'coordinator').status, 0);
+});
+
+test('unparseable stdin solo passes and logs one error', () => {
+  const dir = tmpRepo();
+  const r = run(dir, 'not json');
+  assert.equal(r.status, 0);
+  const log = logLines(dir);
+  assert.equal(log.length, 1);
+  assert.equal(log[0].decision, 'error');
+});
+
+test('onError block makes solo fail closed', () => {
+  const dir = tmpRepo({ onError: 'block' });
+  const r = run(dir, 'not json');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /hook error/);
+});
+
+test('log is capped at 200 lines', () => {
+  const dir = tmpRepo();
+  for (let i = 0; i < 205; i++) {
+    assert.equal(run(dir, bash('git push origin main'), 'worker').status, 2);
+  }
+  assert.equal(logLines(dir).length, 200);
+});
