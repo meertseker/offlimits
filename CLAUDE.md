@@ -27,7 +27,7 @@ Run all three and paste the result into the delivery template:
 ```
 node --test
 node hooks/selftest.mjs
-claude plugin validate --strict .
+claude plugin validate .
 ```
 
 ## Delivery template

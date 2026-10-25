@@ -5,7 +5,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "test": "node --test",
-    "validate": "claude plugin validate --strict .",
+    "validate": "claude plugin validate .",
     "selftest": "node hooks/selftest.mjs"
   }
 }

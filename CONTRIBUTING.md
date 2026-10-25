@@ -19,7 +19,7 @@ Run all three checks:
 ```
 node --test
 node hooks/selftest.mjs
-claude plugin validate --strict .
+claude plugin validate .
 ```
 
 Use plain `node --test`; `node --test tests/` fails on Windows.

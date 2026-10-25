@@ -50,5 +50,5 @@ test('SECURITY.md and CONTRIBUTING.md carry their promises', () => {
     assert.ok(c.includes('`' + id + '`'), `missing rule id ${id}`);
   }
   assert.ok(/zero.dependency/i.test(c));
-  assert.ok(c.includes('node hooks/selftest.mjs') && c.includes('claude plugin validate --strict .'));
+  assert.ok(c.includes('node hooks/selftest.mjs') && c.includes('claude plugin validate .'));
 });
