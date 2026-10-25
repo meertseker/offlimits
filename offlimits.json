@@ -1,0 +1,4 @@
+{
+  "protectedBranches": ["main"],
+  "protectedPaths": [".claude/**", "offlimits.json", ".github/workflows/**"]
+}

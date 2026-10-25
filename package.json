@@ -1,0 +1,11 @@
+{
+  "name": "offlimits",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test tests/",
+    "validate": "claude plugin validate --strict .",
+    "selftest": "node hooks/selftest.mjs"
+  }
+}
