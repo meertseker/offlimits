@@ -1,0 +1,12 @@
+{
+  "name": "offlimits",
+  "description": "Off Limits: a zero-dependency hook that keeps coding agents out of production.",
+  "owner": { "name": "Mert Seker" },
+  "plugins": [
+    {
+      "name": "offlimits",
+      "source": "./",
+      "description": "The hook that keeps your coding agent out of production: blocks pushes to protected branches, remote migrations, deploys and prod MCP writes, in every permission mode."
+    }
+  ]
+}

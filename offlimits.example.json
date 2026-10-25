@@ -1,0 +1,22 @@
+{
+  "protectedBranches": ["main", "master"],
+  "protectedPaths": [
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".claude/hooks/**",
+    "offlimits.json",
+    ".github/workflows/**"
+  ],
+  "production": {
+    "mcpServers": ["supabase"],
+    "projectRefs": ["abcdefghijklmnop"],
+    "hosts": ["db.example.com"]
+  },
+  "extraDeny": [
+    { "pattern": "\\bterraform\\s+apply\\b", "reason": "Infrastructure changes go through the coordinator." }
+  ],
+  "allow": ["^git push origin feat/[\\w./-]+$"],
+  "trustedAgentTypes": [],
+  "roleEnv": "OFFLIMITS_ROLE",
+  "onError": "auto"
+}

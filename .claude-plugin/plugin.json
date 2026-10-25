@@ -1,0 +1,11 @@
+{
+  "name": "offlimits",
+  "displayName": "Off Limits",
+  "version": "0.1.0",
+  "description": "The hook that keeps your coding agent out of production: blocks pushes to protected branches, remote migrations, deploys and prod MCP writes, in every permission mode.",
+  "author": { "name": "Mert Seker" },
+  "homepage": "https://github.com/meertseker/offlimits",
+  "repository": "https://github.com/meertseker/offlimits",
+  "license": "MIT",
+  "keywords": ["hooks", "safety", "guardrails", "production", "git", "supabase", "vercel", "multi-agent"]
+}
