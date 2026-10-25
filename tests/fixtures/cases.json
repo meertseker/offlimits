@@ -91,5 +91,12 @@
   {"name":"mcp__acme__get_thing {} {\"production\":{\"mcpServers\":[\"acme\"]}}","tool_name":"mcp__acme__get_thing","tool_input":{},"role":"solo","expect":"allow","policy":{"production":{"mcpServers":["acme"]}}},
   {"name":"mcp__acme__update_thing {} {\"production\":{\"mcpServers\":[\"acme\"]}}","tool_name":"mcp__acme__update_thing","tool_input":{},"role":"solo","expect":"deny","rule":"mcp-write","policy":{"production":{"mcpServers":["acme"]}}},
   {"name":"mcp__acme__update_thing {}","tool_name":"mcp__acme__update_thing","tool_input":{},"role":"solo","expect":"allow"},
-  {"name":"mcp__x__do {\"project_ref\":\"abc\"} {\"production\":{\"projectRefs\":[\"abc\"]}}","tool_name":"mcp__x__do","tool_input":{"project_ref":"abc"},"role":"solo","expect":"deny","rule":"mcp-write","policy":{"production":{"projectRefs":["abc"]}}}
+  {"name":"mcp__x__do {\"project_ref\":\"abc\"} {\"production\":{\"projectRefs\":[\"abc\"]}}","tool_name":"mcp__x__do","tool_input":{"project_ref":"abc"},"role":"solo","expect":"deny","rule":"mcp-write","policy":{"production":{"projectRefs":["abc"]}}},
+  {"name":"Write .claude/settings.json","tool_name":"Write","tool_input":{"file_path":".claude/settings.json"},"role":"worker","expect":"deny","rule":"protected-file"},
+  {"name":"Write .github/workflows/ci.yml","tool_name":"Write","tool_input":{"file_path":".github/workflows/ci.yml"},"role":"worker","expect":"deny","rule":"protected-file"},
+  {"name":"Write hooks/gate.mjs","tool_name":"Write","tool_input":{"file_path":"hooks/gate.mjs"},"role":"worker","expect":"allow"},
+  {"name":"redirect into settings.json","tool_name":"Bash","tool_input":{"command":"echo x > .claude/settings.json"},"role":"worker","expect":"deny","rule":"protected-file"},
+  {"name":"rm offlimits.json","tool_name":"Bash","tool_input":{"command":"rm offlimits.json"},"role":"solo","expect":"deny","rule":"protected-file"},
+  {"name":"cp offlimits.json to tmp","tool_name":"Bash","tool_input":{"command":"cp offlimits.json /tmp/backup.json"},"role":"worker","expect":"allow"},
+  {"name":"coordinator writes settings.json","tool_name":"Write","tool_input":{"file_path":".claude/settings.json"},"role":"coordinator","expect":"allow"}
 ]

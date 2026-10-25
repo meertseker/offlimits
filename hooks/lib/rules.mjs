@@ -3,6 +3,7 @@
 import { expand } from './shell.mjs';
 import { checkSegment } from './rules/shell-rules.mjs';
 import { checkMcp } from './rules/mcp-rules.mjs';
+import { checkFileTool, checkBashWrite } from './rules/file-rules.mjs';
 
 const ALLOW = Object.freeze({ action: 'allow' });
 
@@ -18,7 +19,7 @@ export function decide(input, ctx) {
 
   if (tool === 'Bash' || tool === 'PowerShell') {
     for (const segment of expand(toolInput.command)) {
-      const d = checkSegment(segment, ctx);
+      const d = checkSegment(segment, ctx) ?? checkBashWrite(segment, ctx);
       if (d) return d;
     }
     return ALLOW;
@@ -26,6 +27,5 @@ export function decide(input, ctx) {
   if (tool.startsWith('mcp__')) {
     return checkMcp(tool, toolInput, ctx) ?? ALLOW;
   }
-  // File tools (Write/Edit/MultiEdit/NotebookEdit) are wired in by a later task.
-  return ALLOW;
+  return checkFileTool(tool, toolInput, ctx) ?? ALLOW;
 }
