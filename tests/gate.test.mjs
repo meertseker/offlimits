@@ -95,3 +95,17 @@ test('log is capped at 200 lines', () => {
   }
   assert.equal(logLines(dir).length, 200);
 });
+
+test('array and tool_name-less input are malformed', () => {
+  const dir = tmpRepo();
+  assert.equal(run(dir, '[1,2]', 'worker').status, 2);
+  assert.equal(run(dir, { tool_input: {} }, 'worker').status, 2);
+  assert.equal(run(dir, { tool_input: {} }).status, 0);
+  assert.equal(logLines(dir).filter((e) => e.decision === 'error').length, 3);
+});
+
+test('solo onError block names the policy, worker keeps the role wording', () => {
+  const dir = tmpRepo({ onError: 'block' });
+  assert.match(run(dir, 'not json').stderr, /^offlimits: hook error, blocking because policy\.onError is block/);
+  assert.match(run(dir, 'not json', 'worker').stderr, /^offlimits: hook error, blocking because a role is set/);
+});

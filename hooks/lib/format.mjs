@@ -16,7 +16,7 @@ const NEXT_STEP = {
 export function denyMessage(d, role) {
   return [
     `offlimits: blocked ${d.summary ?? ''}`.trimEnd(),
-    `rule: ${d.rule} — ${d.reason}`,
+    `rule: ${d.rule} - ${d.reason}`,
     `role: ${role}`,
     NEXT_STEP[role] ?? NEXT_STEP.solo,
   ].join('\n');
@@ -30,14 +30,12 @@ export function askReason(d) {
 /** SessionStart context banner. */
 export function banner(f) {
   const lines = [
-    `offlimits active — role: ${f.role}; protected branches: ${f.protectedBranches.join(', ') || 'none'}; ` +
-      `${f.blocks} blocked in log; policy: ${f.policySource}. See /offlimits.`,
+    `offlimits active - role: ${f.role}; protected branches: ${f.protectedBranches.join(', ') || 'none'}; ` +
+      (f.productionConfigured
+        ? 'production definition found'
+        : 'no production definition (MCP writes will ask instead of block)') +
+      `; ${f.blocks} blocked in log. See /offlimits.`,
   ];
-  lines.push(
-    f.productionConfigured
-      ? 'Production definition found in offlimits.json.'
-      : 'No production definition in offlimits.json: MCP writes will ask instead of block.',
-  );
   if (f.role === 'worker' && f.branch && f.protectedBranches.includes(f.branch)) {
     lines.push(`WARNING: this worker is on protected branch "${f.branch}". Switch to a feat/* branch before editing.`);
   }

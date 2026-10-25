@@ -8,7 +8,7 @@ test('deny message has the four lines (worker)', () => {
   const lines = denyMessage(d, 'worker').split('\n');
   assert.equal(lines.length, 4);
   assert.equal(lines[0], 'offlimits: blocked git push origin main');
-  assert.equal(lines[1], 'rule: git-push-protected — Pushing to main is off limits.');
+  assert.equal(lines[1], 'rule: git-push-protected - Pushing to main is off limits.');
   assert.equal(lines[2], 'role: worker');
   assert.match(lines[3], /Commit your branch and hand over to the coordinator/);
 });
@@ -40,4 +40,13 @@ test('banner warns for worker on protected branch', () => {
   assert.match(b, /hook errors/);
   assert.match(b, /p1/);
   assert.match(b, /\/offlimits/);
+});
+
+test('banner first line carries role, branches, production state and blocks', () => {
+  const b = banner({
+    role: 'solo', protectedBranches: ['main', 'master'], productionConfigured: true,
+    blocks: 3, errors: 0, branch: 'feat/x', policySource: 'default', problems: [],
+  });
+  assert.equal(b.split('\n').length, 1);
+  assert.match(b, /role: solo.*main, master.*production definition found.*3 blocked/);
 });

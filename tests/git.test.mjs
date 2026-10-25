@@ -22,6 +22,13 @@ test('commonRoot never throws on bad cwd', () => {
   assert.equal(repoRoot(undefined, out('/r')), null);
   assert.equal(currentBranch(undefined, out('main')), '');
 });
+test('currentBranch falls back to symbolic-ref on an unborn branch', () => {
+  const exec = (_cmd, args) => {
+    if (args[0] === 'rev-parse') throw new Error('unknown revision HEAD');
+    return 'main\n';
+  };
+  assert.equal(currentBranch('/x', exec), 'main');
+});
 test('currentBranch', () => {
   assert.equal(currentBranch('/x', out('feat/a\n')), 'feat/a');
   assert.equal(currentBranch('/x', boom), '');

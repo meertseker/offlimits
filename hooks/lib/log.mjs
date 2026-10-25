@@ -8,6 +8,7 @@ const file = (root) => path.join(root, '.offlimits', 'log.jsonl');
 export function appendLog(root, entry) {
   try {
     const f = file(root);
+    if (!fs.statSync(root).isDirectory()) return;
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.appendFileSync(f, JSON.stringify(entry) + '\n');
     const lines = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean);

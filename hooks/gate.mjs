@@ -24,7 +24,9 @@ function record(cwd, input, role, decision, rule, summary) {
 }
 
 function fail(err, input) {
-  let code = 0;
+  // Fail closed first: if anything below throws, a set worker role still blocks.
+  const envRole = String(process.env.OFFLIMITS_ROLE ?? '').trim().toLowerCase();
+  let code = envRole === 'worker' || input?.agent_id ? 2 : 0;
   try {
     const cwd = typeof input?.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
     let policy = DEFAULT_POLICY;
@@ -36,10 +38,11 @@ function fail(err, input) {
     const role = resolveRole(input, process.env, policy);
     const message = err instanceof Error ? err.message : String(err);
     const block = policy.onError === 'block' || (policy.onError === 'auto' && role === 'worker');
+    code = block ? 2 : 0;
     record(cwd, input, role, 'error', '', message);
     if (block) {
-      process.stderr.write(`offlimits: hook error, blocking because a role is set: ${message}\n`);
-      code = 2;
+      const why = role === 'solo' ? 'blocking because policy.onError is block' : 'blocking because a role is set';
+      process.stderr.write(`offlimits: hook error, ${why}: ${message}\n`);
     }
   } catch {
     /* never throw */
@@ -50,7 +53,9 @@ function fail(err, input) {
 function main() {
   const input = readStdin();
   try {
-    if (!input) throw new Error('could not read hook input (empty or invalid JSON on stdin)');
+    if (!input || typeof input.tool_name !== 'string') {
+      throw new Error('could not read hook input (empty, invalid, or missing tool_name)');
+    }
     const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
     const root = repoRoot(cwd);
     const { policy } = loadPolicy(root ?? cwd);

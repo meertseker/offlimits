@@ -32,6 +32,8 @@ export function commonRoot(cwd, exec = execFileSync) {
 
 /** Current branch name, or '' on error or detached HEAD. Never throws. */
 export function currentBranch(cwd, exec = execFileSync) {
-  const name = run(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'], exec);
+  let name = run(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'], exec);
+  // Unborn branch (no commits yet): rev-parse fails, symbolic-ref still knows the name.
+  if (!name) name = run(cwd, ['symbolic-ref', '--short', 'HEAD'], exec);
   return name && name !== 'HEAD' ? name : '';
 }
