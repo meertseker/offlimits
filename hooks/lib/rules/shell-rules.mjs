@@ -1,11 +1,14 @@
 // Shell command rules for Bash / PowerShell segments.
 // Each rule is { id, test(c) -> reason | null, action?(ctx) }, applied in order.
 
-import { stripAssignments, tokens } from '../shell.mjs';
+import { stripAssignments, tokens, OPAQUE_PREFIX } from '../shell.mjs';
 
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'exec', 'time', 'nohup', 'nice', 'builtin']);
 const RUNNERS = new Set(['npx', 'bunx', 'pnpx']);
 const PM_RUNNERS = new Set(['pnpm', 'yarn', 'npm', 'bun']);
+const PM_SHORTCUT = new Set(['pnpm', 'yarn', 'bun']);
+const PM_SUBCOMMANDS = new Set(['add', 'install', 'i', 'remove', 'rm', 'uninstall', 'update', 'up', 'upgrade', 'ci', 'test', 'build', 'init', 'link', 'publish', 'pack', 'exec', 'dlx', 'x', 'run', 'workspace', 'workspaces', 'npm', 'config', 'cache', 'info', 'list', 'ls', 'why', 'audit', 'outdated']);
+const PM_VALUE_FLAGS = ['--filter', '-F', '--dir', '-C', '--cwd', '--workspace'];
 
 const base = (t) => String(t ?? '').split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
 const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -15,11 +18,13 @@ const clip = (s) => (s.length > 90 ? `${s.slice(0, 87)}...` : s);
 function parseCommand(rest) {
   const t = tokens(rest);
   let i = 0;
+  const envs = [];
   const skipPrefix = () => {
     for (;;) {
       if (i >= t.length) return;
       const prev = i > 0 ? base(t[i - 1]) : '';
-      if (WRAPPERS.has(base(t[i])) || /^[A-Za-z_]\w*=/.test(t[i])) i++;
+      if (/^[A-Za-z_]\w*=/.test(t[i])) envs.push(t[i++]);
+      else if (WRAPPERS.has(base(t[i]))) i++;
       else if (prev === 'sudo' && (t[i] === '-u' || t[i] === '-g')) i += 2;
       else if (WRAPPERS.has(prev) && t[i].startsWith('-')) i++;
       else return;
@@ -34,11 +39,20 @@ function parseCommand(rest) {
     } else if (PM_RUNNERS.has(name) && ['dlx', 'exec', 'x'].includes(t[i + 1])) {
       i += 2;
       while (i < t.length && t[i].startsWith('-')) i++;
+    } else if (PM_SHORTCUT.has(name)) {
+      let j = i + 1;
+      while (j < t.length && t[j].startsWith('-')) j += PM_VALUE_FLAGS.includes(t[j]) ? 2 : 1;
+      if (t[j] === 'run') {
+        j++;
+        while (j < t.length && t[j].startsWith('-')) j++;
+      }
+      if (j < t.length && !PM_SUBCOMMANDS.has(t[j]) && !t[j].startsWith('.')) i = j;
+      else break;
     } else break;
   }
   let name = base(t[i]);
   if (name.lastIndexOf('@') > 0) name = name.slice(0, name.lastIndexOf('@'));
-  return { name, args: t.slice(i + 1), toks: t };
+  return { name, args: t.slice(i + 1), toks: t, envs };
 }
 
 function positionals(args, valueFlags = []) {
@@ -82,15 +96,18 @@ function branchRegex(branches) {
   return names.length ? new RegExp(`(^|:|\\+)(refs/heads/)?(${names.join('|')})$`) : null;
 }
 
+const GIT_DYNAMIC = /[`$]/;
 const PUSH_VALUE_FLAGS = ['-o', '--push-option', '--repo', '--receive-pack', '--exec'];
 
 function safeBranch(ctx, dir) {
   try {
-    return String(ctx.currentBranch(dir || ctx.cwd) ?? '');
+    return String(ctx.currentBranch(dir || ctx.cwd) ?? '').trim();
   } catch {
     return '';
   }
 }
+
+const unsureAction = (ctx) => (ctx.role === 'worker' ? 'deny' : 'ask');
 
 function gitPushProtected(c) {
   const g = parseGit(c.info);
@@ -100,7 +117,8 @@ function gitPushProtected(c) {
   if (hasFlag(g.args, '--all', '--mirror')) {
     return `git push ${g.args.find((x) => x.startsWith('--all') || x.startsWith('--mirror')).split('=')[0]} updates every branch including protected ones ${quoted}.`;
   }
-  const refspecs = positionals(g.args, PUSH_VALUE_FLAGS).slice(1);
+  const pos = positionals(g.args, PUSH_VALUE_FLAGS);
+  const refspecs = hasFlag(g.args, '--repo') ? pos : pos.slice(1);
   const re = branchRegex(policy.protectedBranches);
   if (re) {
     for (const r of refspecs) {
@@ -108,12 +126,12 @@ function gitPushProtected(c) {
       if (m) return `git push targets protected branch "${m[3]}" ${quoted}.`;
     }
   }
-  const implicit = refspecs.length === 0 || refspecs.some((r) => r === 'HEAD' || r === '@');
+  const dynamic = GIT_DYNAMIC.test(c.rest.slice(c.rest.indexOf('push')));
+  const implicit = dynamic || refspecs.length === 0 || refspecs.some((r) => r === 'HEAD' || r === '@');
   if (implicit) {
     const b = safeBranch(c.ctx, g.dir);
-    if (b && policy.protectedBranches.includes(b)) {
-      return `git push from protected branch "${b}" ${quoted}.`;
-    }
+    if (!b) return { action: unsureAction(c.ctx), reason: `git push destination unclear and could not determine the current branch ${quoted}.` };
+    if (policy.protectedBranches.includes(b)) return `git push from protected branch "${b}" ${quoted}.`;
   }
   return null;
 }
@@ -121,7 +139,7 @@ function gitPushProtected(c) {
 function gitBranchProtected(c) {
   const g = parseGit(c.info);
   if (!g || g.sub !== 'branch') return null;
-  const mutating = g.args.some((a) => /^-[a-zA-Z]*[DdMm][a-zA-Z]*$/.test(a) || a === '--delete' || a === '--move');
+  const mutating = g.args.some((a) => /^-[a-zA-Z]*[DdMmf][a-zA-Z]*$/.test(a) || a === '--delete' || a === '--move' || a === '--force');
   if (!mutating) return null;
   const hit = positionals(g.args).find((p) => c.ctx.policy.protectedBranches.includes(p));
   return hit ? `git branch deletes or renames protected branch "${hit}" (matched "${clip(c.rest)}").` : null;
@@ -134,7 +152,7 @@ const GH_SENSITIVE = /^\/?repos\/[^/]+\/[^/]+\/(rulesets(\/.*)?|branches\/[^/]+\
 function ghWrite(c) {
   if (c.info.name !== 'gh') return null;
   const a = c.info.args;
-  const pos = positionals(a, ['-R', '--repo', '-X', '--method', '-f', '-F', '-H', '--header', '--jq', '-q', '-t', '--template', '--hostname']);
+  const pos = positionals(a, ['-R', '--repo', '-X', '--method', '-f', '-F', '-H', '--header', '--input', '--jq', '-q', '-t', '--template', '--hostname']);
   const [p0, p1] = pos;
   const shown = `(matched "${clip(c.rest)}")`;
   if (p0 === 'pr' && p1 === 'merge') return `gh pr merge merges into a shared branch ${shown}.`;
@@ -165,6 +183,7 @@ function supabaseRemote(c) {
   const hit =
     key === 'db push' ||
     key === 'db link' ||
+    pos[0] === 'link' ||
     key === 'migration repair' ||
     key === 'functions deploy' ||
     key === 'secrets set' ||
@@ -200,7 +219,7 @@ function remoteDb(c) {
   const { policy } = c.ctx;
   const shown = `(matched "${clip(c.rest)}")`;
   const hosts = [];
-  for (const a of c.assignments) {
+  for (const a of [...c.assignments, ...c.info.envs]) {
     const m = /^PGHOST=(.*)$/.exec(a);
     if (m) hosts.push(m[1]);
   }
@@ -208,7 +227,7 @@ function remoteDb(c) {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (DB_URL_VAR.test(a)) return `${c.info.name} connects through $DATABASE_URL, which is treated as remote ${shown}.`;
-    const u = URI.exec(a);
+    const u = URI.exec(a) ?? URI.exec(a.replace(/^--?[\w-]+=/, ''));
     if (u) hosts.push(...hostsFromUri(u[1]));
     if (a === '-h' || a === '--host') hosts.push(args[i + 1] ?? '');
     else if (a.startsWith('--host=')) hosts.push(a.slice(7));
@@ -245,6 +264,10 @@ function dbMigrate(c) {
 
 const DEPLOY_VALUE_FLAGS = ['-n', '--namespace', '--context', '--kubeconfig', '--cluster', '--user', '--project', '--region', '--profile', '--output', '-a', '--app', '-s', '--stage', '--org', '--config', '--chdir', '-r', '-e'];
 
+function hasTarget(args) {
+  return args.some((a, i) => /^--target=production$/i.test(a) || (a === '--target' && /^production$/i.test(args[i + 1] ?? '')));
+}
+
 function deploy(c) {
   const { name, args } = c.info;
   const pos = positionals(args, DEPLOY_VALUE_FLAGS);
@@ -253,7 +276,7 @@ function deploy(c) {
   let hit = false;
   switch (name) {
     case 'vercel':
-      hit = hasFlag(args, '--prod', '--production') || p0 === 'promote' || p0 === 'rollback' || (p0 === 'alias' && p1 === 'set');
+      hit = hasFlag(args, '--prod', '--production') || hasTarget(args) || p0 === 'promote' || p0 === 'rollback' || (p0 === 'alias' && p1 === 'set');
       break;
     case 'netlify':
       hit = p0 === 'deploy' && hasFlag(args, '--prod', '-p', '--prodIfUnlocked');
@@ -322,7 +345,7 @@ function deploy(c) {
 
 function publish(c) {
   const { name, args } = c.info;
-  const pos = positionals(args);
+  const pos = positionals(args, name === 'npm' ? ['-w', '--workspace', '--prefix'] : name === 'pnpm' ? ['--filter', '-F', '-C', '--dir'] : []);
   const [p0, p1] = pos;
   const hit =
     ((name === 'npm' || name === 'pnpm') && p0 === 'publish') ||
@@ -385,15 +408,23 @@ function compile(pattern) {
 export function checkSegment(segment, ctx) {
   const { assignments, rest } = stripAssignments(segment);
   const policy = ctx.policy;
-  for (const p of policy.allow ?? []) {
-    const re = compile(p);
-    if (re && (re.test(rest) || re.test(segment))) return null;
+  if (rest.startsWith(OPAQUE_PREFIX)) {
+    return {
+      action: ctx.role === 'solo' ? 'ask' : 'deny',
+      rule: 'opaque-shell',
+      reason: 'Shell reads its commands from stdin, cannot inspect them.',
+    };
   }
   const c = { segment, rest, assignments, ctx, info: parseCommand(rest) };
+  const allowed = (policy.allow ?? []).some((p) => compile(p)?.test(rest));
   for (const rule of RULES) {
-    const reason = rule.test(c);
-    if (reason) return { action: rule.action ? rule.action(ctx) : 'deny', rule: rule.id, reason };
+    if (allowed && rule.id !== 'role-spoof') continue;
+    const r = rule.test(c);
+    if (!r) continue;
+    if (typeof r === 'object') return { action: r.action, rule: rule.id, reason: r.reason };
+    return { action: rule.action ? rule.action(ctx) : 'deny', rule: rule.id, reason: r };
   }
+  if (allowed) return null;
   for (const entry of policy.extraDeny ?? []) {
     const re = compile(entry.pattern);
     const m = re && (re.exec(rest) ?? re.exec(segment));

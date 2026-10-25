@@ -66,3 +66,21 @@ test('mcp-write on production project refs, including nested input', () => {
   assert.equal(checkMcp('mcp__x__do', { opts: { projectId: 'q', projectRef: 'abc' } }, ctx('solo', prod)).rule, 'mcp-write');
   assert.equal(checkMcp('mcp__x__do', { project_ref: 'other' }, ctx('solo', prod)), null);
 });
+
+test('SQL comment markers inside strings do not hide writes', () => {
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: "select '--'; delete from t" }, ctx()).rule, 'supabase-mcp');
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: "select '/*'; delete from t; select '*/'" }, ctx()).rule, 'supabase-mcp');
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: 'select $$ -- $$; delete from t' }, ctx()).rule, 'supabase-mcp');
+});
+
+test('do is a write only as a PL/pgSQL block', () => {
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: "select 'to do'" }, ctx()), null);
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: 'DO $$ begin null; end $$' }, ctx()).rule, 'supabase-mcp');
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: 'do language plpgsql $$ begin null; end $$' }, ctx()).rule, 'supabase-mcp');
+});
+
+test('read-only execute_sql is allowed on a production server; names are case-insensitive', () => {
+  assert.equal(checkMcp('mcp__supabase__execute_sql', { query: 'select 1' }, ctx('solo', { mcpServers: ['supabase'] })), null);
+  assert.equal(checkMcp('mcp__Supabase__Apply_Migration', {}, ctx()).rule, 'supabase-mcp');
+  assert.equal(checkMcp('mcp__Plugin_Vercel_Vercel__Create_Deployment', {}, ctx()).rule, 'vercel-mcp');
+});

@@ -91,3 +91,26 @@ test('gh api write needs a sensitive endpoint', () => {
   assert.equal(checkSegment('gh api -X POST repos/a/b/merges -f base=main', ctx()).rule, 'gh-write');
   assert.equal(checkSegment('gh api -X POST repos/a/b/issues', ctx()), null);
 });
+
+test('currentBranch that throws on an implicit push: ask solo, deny worker', () => {
+  const boom = (role) => ({ ...ctx({ role }), currentBranch: () => { throw new Error('no git'); } });
+  const s = checkSegment('git push', boom('solo'));
+  assert.equal(s.action, 'ask');
+  assert.match(s.reason, /could not determine the current branch/);
+  assert.equal(checkSegment('git push', boom('worker')).action, 'deny');
+});
+
+test('opaque-shell sentinel: ask solo, deny worker', () => {
+  assert.equal(checkSegment('offlimits:opaque shell reads stdin', ctx()).action, 'ask');
+  const d = checkSegment('offlimits:opaque shell reads stdin', ctx({ role: 'worker' }));
+  assert.equal(d.action, 'deny');
+  assert.equal(d.rule, 'opaque-shell');
+});
+
+test('allow regexes match rest only and never skip role-spoof', () => {
+  const c = ctx({ policy: { allow: ['^FOO=1 terraform apply$'] } });
+  assert.equal(checkSegment('FOO=1 terraform apply', c).rule, 'deploy');
+  const d = ctx({ policy: { allow: ['.*'] } });
+  assert.equal(checkSegment('OFFLIMITS_ROLE=coordinator ls', d).rule, 'role-spoof');
+  assert.equal(checkSegment('terraform apply', d), null);
+});
