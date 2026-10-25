@@ -37,6 +37,16 @@ const PRODUCTION_KEYS = ['mcpServers', 'projectRefs', 'hosts'];
 const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+function regexOk(pattern, key, problems) {
+  try {
+    new RegExp(pattern, 'i');
+    return true;
+  } catch (e) {
+    problems.push(`offlimits.json: invalid regex in ${key}: ${e.message}`);
+    return false;
+  }
+}
+
 function cloneDefaults() {
   return {
     protectedBranches: [...DEFAULT_POLICY.protectedBranches],
@@ -64,7 +74,7 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
   const file = path.resolve(root, 'offlimits.json');
   let text;
   try {
-    text = String(readFile(file, 'utf8'));
+    text = String(readFile(file, 'utf8')).replace(/^﻿/, '');
   } catch {
     return { policy, source: 'default', problems };
   }
@@ -85,9 +95,12 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
 
   for (const [key, value] of Object.entries(data)) {
     switch (key) {
+      case 'allow':
+        if (isStringArray(value)) policy.allow = value.filter((v) => regexOk(v, key, problems));
+        else bad(key, 'an array of strings');
+        break;
       case 'protectedBranches':
       case 'protectedPaths':
-      case 'allow':
       case 'trustedAgentTypes':
         if (isStringArray(value)) policy[key] = [...value];
         else bad(key, 'an array of strings');
@@ -107,7 +120,9 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
         }
         for (const entry of value) {
           if (isObject(entry) && typeof entry.pattern === 'string' && typeof entry.reason === 'string') {
-            policy.extraDeny.push({ pattern: entry.pattern, reason: entry.reason });
+            if (regexOk(entry.pattern, key, problems)) {
+              policy.extraDeny.push({ pattern: entry.pattern, reason: entry.reason });
+            }
           } else {
             bad('extraDeny[]', '{pattern: string, reason: string}');
           }

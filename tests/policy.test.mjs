@@ -80,3 +80,18 @@ test('loadPolicy does not mutate DEFAULT_POLICY', () => {
   r.policy.protectedBranches.push('x');
   assert.deepEqual(DEFAULT_POLICY.protectedBranches, ['main', 'master']);
 });
+
+test('invalid regex in allow and extraDeny is dropped with a problem', () => {
+  const r = loadPolicy('/repo', reader('{"allow":["ok","("],"extraDeny":[{"pattern":"[","reason":"x"},{"pattern":"fine","reason":"y"}]}'));
+  assert.deepEqual(r.policy.allow, ['ok']);
+  assert.deepEqual(r.policy.extraDeny, [{ pattern: 'fine', reason: 'y' }]);
+  assert.equal(r.problems.length, 2);
+  assert.match(r.problems[0], /^offlimits\.json: invalid regex in allow: .+/);
+  assert.match(r.problems[1], /^offlimits\.json: invalid regex in extraDeny: .+/);
+});
+
+test('leading BOM is stripped', () => {
+  const r = loadPolicy('/repo', reader('\uFEFF{"protectedBranches":["rel"]}'));
+  assert.deepEqual(r.problems, []);
+  assert.deepEqual(r.policy.protectedBranches, ['rel']);
+});

@@ -1,10 +1,10 @@
 import path from 'node:path';
 
 /** Slash-normalise one path: `\` to `/`, Git Bash `/c/x` to `C:/x`, upper-case drive, no trailing slash. */
-function canon(p) {
+function canon(p, platform) {
   let s = String(p).replace(/\\/g, '/');
   const bash = /^\/([a-zA-Z])(?=\/|$)(.*)$/.exec(s);
-  if (bash) s = `${bash[1]}:${bash[2] || '/'}`;
+  if (bash && platform === 'win32') s = `${bash[1]}:${bash[2] || '/'}`;
   const drive = /^([a-zA-Z]):(?=\/|$)/.exec(s);
   if (drive) s = drive[1].toUpperCase() + s.slice(1);
   return s;
@@ -26,20 +26,26 @@ function clean(s) {
  * Drive-letter case is ignored; the rest of the path is compared exactly.
  * @param {string} root
  * @param {string} p
+ * @param {string} [platform]
  * @returns {string}
  */
-export function normalizeRel(root, p) {
-  const r = clean(canon(root));
-  const c = canon(p);
+export function normalizeRel(root, p, platform = process.platform) {
+  const r = clean(canon(root, platform));
+  const c = canon(p, platform);
   const abs = clean(isAbs(c) ? c : `${r}/${c}`);
-  if (abs === r) return '.';
-  const prefix = r.endsWith('/') ? r : `${r}/`;
-  return abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
+  const fold = ci(platform) ? (x) => x.toLowerCase() : (x) => x;
+  const fa = fold(abs);
+  const fr = fold(r);
+  if (fa === fr) return '.';
+  const prefix = fr.endsWith('/') ? fr : `${fr}/`;
+  return fa.startsWith(prefix) ? abs.slice(prefix.length) : abs;
 }
+
+const ci = (platform) => platform === 'win32' || platform === 'darwin';
 
 const cache = new Map();
 
-function compile(pattern) {
+function compile(pattern, flags) {
   let out = '';
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];
@@ -63,20 +69,23 @@ function compile(pattern) {
   }
   // "dir/**" also matches "dir" itself
   if (pattern.endsWith('/**')) out = out.replace(/\\\/\.\*$/, '(?:\\/.*)?');
-  return new RegExp(`^${out}$`);
+  return new RegExp(`^${out}$`, flags);
 }
 
 /**
  * Glob match over `/`-separated relative paths: `**` any depth, `*` within a segment, `?` one char.
  * @param {string} pattern
  * @param {string} rel
+ * @param {string} [platform]
  * @returns {boolean}
  */
-export function globMatch(pattern, rel) {
-  let re = cache.get(pattern);
+export function globMatch(pattern, rel, platform = process.platform) {
+  const flags = ci(platform) ? 'i' : '';
+  const key = `${flags}:${pattern}`;
+  let re = cache.get(key);
   if (!re) {
-    re = compile(pattern);
-    cache.set(pattern, re);
+    re = compile(pattern, flags);
+    cache.set(key, re);
   }
   return re.test(rel);
 }

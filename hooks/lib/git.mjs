@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 function run(cwd, args, exec) {
+  if (typeof cwd !== 'string' || !cwd) return null;
   try {
     const out = exec('git', args, {
       cwd,
