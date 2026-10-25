@@ -3,7 +3,7 @@
 import { expand } from './shell.mjs';
 import { checkSegment } from './rules/shell-rules.mjs';
 import { checkMcp } from './rules/mcp-rules.mjs';
-import { checkFileTool, checkBashWrite } from './rules/file-rules.mjs';
+import { checkFileTool, checkBashWrite, checkRedirects } from './rules/file-rules.mjs';
 
 const ALLOW = Object.freeze({ action: 'allow' });
 
@@ -18,11 +18,12 @@ export function decide(input, ctx) {
   const toolInput = input?.tool_input ?? {};
 
   if (tool === 'Bash' || tool === 'PowerShell') {
+    const redirect = checkRedirects(toolInput.command, ctx);
     for (const segment of expand(toolInput.command)) {
       const d = checkSegment(segment, ctx) ?? checkBashWrite(segment, ctx);
       if (d) return d;
     }
-    return ALLOW;
+    return redirect ?? ALLOW;
   }
   if (tool.startsWith('mcp__')) {
     return checkMcp(tool, toolInput, ctx) ?? ALLOW;
