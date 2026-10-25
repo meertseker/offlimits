@@ -301,3 +301,22 @@ for (const [tool, command, expect] of round1) {
     if (expect === 'deny') assert.equal(d.rule, 'protected-file');
   });
 }
+
+test('protected-file deny message names the actual role', () => {
+  const w = run('Bash', { command: 'rm offlimits.json' }, mk('worker'));
+  assert.match(w.reason, /is not allowed for a worker/);
+  const s = run('Bash', { command: 'rm offlimits.json' }, mk('solo'));
+  assert.equal(s.action, 'deny');
+  assert.match(s.reason, /is not allowed for the solo role/);
+  assert.doesNotMatch(s.reason, /for a worker/);
+  const f = run('Write', { file_path: 'offlimits.json' }, mk('solo'));
+  assert.match(f.reason, /is not allowed for the solo role/);
+  const r = run('Bash', { command: 'echo x > offlimits.json' }, mk('solo'));
+  assert.match(r.reason, /for the solo role/);
+});
+
+test('find -exec write is unsure with its own message', () => {
+  const d = run('Bash', { command: 'find . -name offlimits.json -exec rm {} \;' }, mk('solo'));
+  assert.equal(d.action, 'ask');
+  assert.match(d.reason, /the files find -exec picks at run time/);
+});

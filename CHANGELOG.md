@@ -18,7 +18,7 @@ Rules for `Bash` and `PowerShell` calls:
 - `agent-spawn`: a worker starting another agent CLI (ask in solo)
 - `git-clean`: `git clean -x|-X`, which also deletes ignored files (ask in solo, deny for workers)
 - `protected-file`: writes to hook config, policy files and the user-level Claude Code settings, through file tools and shell commands (including globs, parent directories, copies, downloads and `git rm`/`git mv`), and any call that mentions `disableAllHooks`
-- `opaque-shell`: shells that read commands from stdin (ask in solo, deny for workers)
+- `opaque-shell`: shells that read commands from stdin, `eval` of generated text, nesting deeper than 8 levels, and commands too large to inspect in time (over 64 KB, 1000 segments or 200 variables) (ask in solo, deny for workers)
 - `extra-deny`: your own patterns from `offlimits.json`
 
 Rules for MCP tools:
@@ -33,5 +33,5 @@ Also in this release:
 
 - Roles: coordinator, worker (including subagents) and solo, from `OFFLIMITS_ROLE`
 - Policy file `offlimits.json` with optional keys, see `docs/policy.md`
-- Session banner, `.offlimits/log.jsonl`, the `/offlimits` skill with `test` and `explain`
+- Session banner, `.offlimits/log.jsonl`, the `/offlimits` skill with `test` (a sample of about 60 fixtures; `--all` for every one) and `explain`
 - Zero dependencies, Node 20 or newer, no network, no telemetry

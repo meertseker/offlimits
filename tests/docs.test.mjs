@@ -118,3 +118,65 @@ test('every file the docs own is under 256 KiB', () => {
     assert.ok(fs.statSync(path.join(root, f)).size < 256 * 1024, f);
   }
 });
+
+test('every RULE_IDS entry appears in README.md and in CONTRIBUTING.md', async () => {
+  const { RULE_IDS } = await import('../hooks/lib/rules.mjs');
+  const readme = read('README.md');
+  const contributing = read('CONTRIBUTING.md');
+  for (const id of RULE_IDS) {
+    assert.ok(readme.includes(`\`${id}\``), `README misses ${id}`);
+    assert.ok(contributing.includes(`\`${id}\``), `CONTRIBUTING misses ${id}`);
+  }
+  // README "What it blocks" has a row for every rule id
+  for (const id of RULE_IDS) assert.ok(readme.includes(`| \`${id}\` |`), `README table misses ${id}`);
+});
+
+test('README solo row lists the same ask rules as the docs/policy.md roles table', () => {
+  const policy = read('docs/policy.md');
+  const header = policy.split('\n').find((l) => l.startsWith('| Role | Set by | Hard rules |'));
+  assert.ok(header, 'policy roles table header');
+  const ids = [...header.matchAll(/`([a-z-]+)`/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 7);
+  const solo = read('README.md').split('\n').find((l) => l.startsWith('| `solo` |'));
+  for (const id of ids) assert.ok(solo.includes(`\`${id}\``), `README solo row misses ${id}`);
+  assert.ok(solo.includes('unsure calls'));
+});
+
+test('response times follow SECURITY.md everywhere', () => {
+  for (const f of ['README.md', 'docs/limits.md']) {
+    const t = read(f);
+    assert.ok(!t.includes('24 hours'), `${f} still says 24 hours`);
+    assert.ok(t.includes('48 h') && t.includes('7 days'), `${f} lacks 48 h / 7 days`);
+  }
+});
+
+test('failure mode wording: auto blocks only for workers, the warning shows in the next banner', () => {
+  for (const f of ['README.md', 'docs/limits.md']) {
+    const t = read(f);
+    assert.ok(t.includes('blocks only for workers'), `${f} failure wording`);
+    assert.ok(t.includes('next session banner'), `${f} names the banner`);
+    assert.ok(!t.includes('blocks in team mode'), `${f} still says team mode`);
+  }
+});
+
+test('README Usta line and bypass template roles', () => {
+  assert.ok(read('README.md').includes('It will also be the gate of Usta, an AI software team for family businesses.'));
+  assert.ok(!read('README.md').includes('It is now the gate of Usta'));
+  assert.ok(read('.github/ISSUE_TEMPLATE/bypass.md').includes('coordinator, worker or solo'));
+});
+
+test('limits and policy describe the unknown $VAR refspec fallback like the README', () => {
+  for (const f of ['docs/limits.md', 'docs/policy.md']) {
+    const t = read(f);
+    assert.ok(/falls back to the current branch/.test(t), `${f} fallback`);
+    assert.ok(/allowed on a feature branch and denied on a protected one/.test(t), `${f} outcome`);
+  }
+  assert.ok(!read('docs/limits.md').includes('`git push origin $TARGET` cannot be resolved'));
+});
+
+test('limits.md lists the v0.1 final-review limits', () => {
+  const t = read('docs/limits.md');
+  for (const s of ['Git aliases from your git config', 'Switching away from a protected branch and pushing in one command', 'Heredoc bodies are scanned', 'Very large commands', '`find -exec`']) {
+    assert.ok(t.includes(s), `missing ${s}`);
+  }
+});

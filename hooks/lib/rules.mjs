@@ -20,6 +20,50 @@ export const RULE_IDS = Object.freeze([
   ]),
 ]);
 
+/**
+ * Limits for one shell command. Beyond maxBytes, maxSegments or maxVars the command is opaque;
+ * beyond maxBraceWords (all brace words judged), maxBranchLookups (distinct directories whose
+ * branch is read with git) or branchLookupMs (time spent in those reads) the remaining checks
+ * count as unsure.
+ */
+export const BUDGET = Object.freeze({
+  maxBytes: 64 * 1024,
+  maxSegments: 1000,
+  maxVars: 200,
+  maxBraceWords: 4096,
+  maxBranchLookups: 16,
+  branchLookupMs: 3000,
+});
+
+/** currentBranch memoised per directory and capped, so one command cannot spawn git without bound. */
+function branchLookup(currentBranch) {
+  const cache = new Map();
+  let spent = 0;
+  return (dir) => {
+    const key = String(dir);
+    if (cache.has(key)) return cache.get(key);
+    if (cache.size >= BUDGET.maxBranchLookups || spent > BUDGET.branchLookupMs) return '';
+    const t = Date.now();
+    let b = '';
+    try {
+      b = currentBranch(dir);
+    } catch {
+      b = '';
+    }
+    spent += Date.now() - t;
+    cache.set(key, b);
+    return b;
+  };
+}
+
+function overBudget(ctx, what) {
+  return {
+    action: ctx.role === 'solo' ? 'ask' : 'deny',
+    rule: 'opaque-shell',
+    reason: `Command ${what}, too large to inspect in time.`,
+  };
+}
+
 /** Absolute directory for a tracked segment cwd ('.' = ctx.cwd, null = unknown). */
 function segmentCwd(base, cwd) {
   if (cwd === '.') return base;
@@ -42,14 +86,19 @@ export function decide(input, ctx) {
   const toolInput = input?.tool_input ?? {};
 
   if (tool === 'Bash' || tool === 'PowerShell') {
-    const redirect = checkRedirects(toolInput.command, ctx);
+    const command = String(toolInput.command ?? '');
+    // Input budget: the hook must answer well inside Claude Code's hook timeout, or the call proceeds.
+    if (command.length > BUDGET.maxBytes) return overBudget(ctx, `is longer than ${BUDGET.maxBytes / 1024} KB`);
+    const segs = expandWithState(command, BUDGET);
+    if (segs.overBudget) return overBudget(ctx, `has ${segs.overBudget}`);
     const heads = new Map();
-    for (const { segment, cwd, envs } of expandWithState(toolInput.command)) {
-      const sctx = { ...ctx, segCwd: segmentCwd(ctx.cwd, cwd), segEnvs: envs, heads };
+    const shared = { ...ctx, currentBranch: branchLookup(ctx.currentBranch), work: { words: BUDGET.maxBraceWords } };
+    for (const { segment, cwd, envs } of segs) {
+      const sctx = { ...shared, segCwd: segmentCwd(ctx.cwd, cwd), segEnvs: envs, heads };
       const d = checkSegment(segment, sctx) ?? checkBashWrite(segment, sctx);
       if (d) return { action: d.action, rule: d.rule, reason: d.reason };
     }
-    return redirect ?? ALLOW;
+    return checkRedirects(command, shared) ?? ALLOW;
   }
   if (tool.startsWith('mcp__')) {
     return checkMcp(tool, toolInput, ctx) ?? ALLOW;

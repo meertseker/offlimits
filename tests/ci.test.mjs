@@ -14,10 +14,14 @@ test('ci.yml covers the OS and Node matrix', () => {
   }
 });
 
+test('package.json selftest script runs every case', () => {
+  assert.equal(JSON.parse(read('package.json')).scripts.selftest, 'node hooks/selftest.mjs --all');
+});
+
 test('ci.yml runs the checks with plain node --test', () => {
   assert.ok(/node --test\s*$/m.test(ci), 'plain `node --test` step');
   assert.ok(!ci.includes('node --test tests/'), 'directory form fails on Windows');
-  assert.ok(ci.includes('node hooks/selftest.mjs'));
+  assert.ok(ci.includes('node hooks/selftest.mjs --all'), 'CI runs the full self-test');
   assert.ok(ci.includes('claude plugin validate .'));
   assert.ok(ci.includes('@anthropic-ai/claude-code@2.1.310'));
   assert.ok(ci.includes('continue-on-error: true'));

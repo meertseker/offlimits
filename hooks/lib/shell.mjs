@@ -7,20 +7,41 @@ export const OPAQUE_DEEP = `${OPAQUE_PREFIX} nesting too deep`;
 export const OPAQUE_EVAL = `${OPAQUE_PREFIX} eval of command output`;
 const MAX_ROUNDS = 8;
 
-// Commands that merely run another command; we scan past them (and their flags) to the shell.
-const WRAPPER_PREFIXES = new Set([
-  'sudo', 'env', 'command', 'exec', 'time', 'nohup', 'nice', 'builtin',
-  'timeout', 'doas', 'stdbuf', 'setsid', 'xargs', 'ionice', 'flock', 'watch',
-  'unbuffer', 'strace', 'winpty', 'chronic',
-]);
+/**
+ * The one wrapper table: commands that merely run another command. `v` lists the wrapper's flags
+ * that take a separate value, `pos` how many leading positionals (duration, priority, CPU mask,
+ * lock file) the wrapper itself consumes. Used by the shell unwrapper and by every rule module.
+ */
+export const WRAPPERS = Object.freeze({
+  sudo: { v: ['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-U', '-T', '--user', '--group', '--chdir', '--host', '--prompt', '--role', '--type', '--other-user', '--close-from', '--command-timeout'] },
+  doas: { v: ['-u', '-C'] },
+  env: { v: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'] },
+  command: {},
+  builtin: {},
+  exec: { v: ['-a'] },
+  nohup: {},
+  time: { v: ['-f', '--format', '-o', '--output'] },
+  nice: { v: ['-n', '--adjustment'] },
+  timeout: { v: ['-s', '--signal', '-k', '--kill-after'], pos: 1 },
+  stdbuf: { v: ['-i', '-o', '-e', '--input', '--output', '--error'] },
+  setsid: {},
+  ionice: { v: ['-c', '-n', '-p', '-P', '-u', '--class', '--classdata', '--pid', '--pgid', '--uid'] },
+  flock: { v: ['-w', '--timeout', '-E', '--conflict-exit-code'], pos: 1 },
+  chrt: { v: ['-T', '--sched-runtime', '-P', '--sched-period', '-D', '--sched-deadline'], pos: 1 },
+  taskset: { pos: 1 },
+  watch: { v: ['-n', '--interval'] },
+  unbuffer: {},
+  strace: { v: ['-o', '-e', '-p', '-s', '-u', '-E', '-P', '-I', '-b', '-a', '-X', '-O', '-S'] },
+  winpty: {},
+  chronic: {},
+  xargs: { v: ['-I', '-n', '-P', '-L', '-d', '-a', '-E', '-s', '--max-args', '--max-procs', '--delimiter', '--arg-file', '--replace', '--max-lines', '--eof', '--max-chars'] },
+});
+const isWrapper = (name) => Object.hasOwn(WRAPPERS, name);
 const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
 const PS_SHELLS = new Set(['pwsh', 'powershell']);
 const SHELL_LIKE = new Set([...POSIX_SHELLS, ...PS_SHELLS, 'cmd', 'eval']);
 const ASSIGN = /^[A-Za-z_]\w*=/;
 const EVAL_SAFE = new Set(['ssh-agent', 'brew', 'direnv', 'pyenv', 'rbenv', 'nodenv', 'fnm', 'zoxide', 'starship', 'mise', 'rtx', 'conda', 'keychain', 'dircolors', 'opam', 'luarocks', 'pdm', 'register-python-argcomplete']);
-
-// Leading shell keywords / grouping tokens that are not part of the command itself.
-const LEADING_NOISE = /^(?:[{}!](?:\s+|$)|time\s+-p(?:\s+|$)|(?:then|do|else|elif|if|while|until|time)(?:\s+|$))/;
 
 const OPEN = Symbol('open');
 const CLOSE = Symbol('close');
@@ -113,13 +134,38 @@ function scan(s, literalBackslash, marks = false) {
   return out;
 }
 
-/** Drop leading keywords/braces/negation and a trailing closing brace. */
+// Leading shell keywords / grouping tokens that are not part of the command itself.
+const NOISE_WORDS = [/[{}!]/y, /time\s+-p/y, /(?:then|do|else|elif|if|while|until|time)/y];
+const WS = /\s/;
+
+/** Drop leading keywords/braces/negation and trailing closing braces (index based, linear time). */
 function clean(seg) {
-  let t = seg.trim();
+  const s = String(seg);
+  let start = 0;
+  let end = s.length;
+  const trim = () => {
+    while (start < end && WS.test(s[start])) start++;
+    while (end > start && WS.test(s[end - 1])) end--;
+  };
+  trim();
   for (;;) {
-    const n = t.replace(LEADING_NOISE, '').replace(/\s+\}$/, '').trim();
-    if (n === t) return t;
-    t = n;
+    const was = [start, end];
+    for (const re of NOISE_WORDS) {
+      re.lastIndex = start;
+      const m = re.exec(s);
+      const p = m ? start + m[0].length : -1;
+      // a noise word must be followed by whitespace or end the segment
+      if (m && (p === end || (p < end && WS.test(s[p])))) {
+        start = p;
+        break;
+      }
+    }
+    trim();
+    if (end - start >= 3 && s[end - 1] === '}' && WS.test(s[end - 2])) {
+      end--;
+      trim();
+    }
+    if (start === was[0] && end === was[1]) return s.slice(start, end);
   }
 }
 
@@ -352,8 +398,55 @@ function substitutions(s) {
   return out;
 }
 
-function baseName(tok) {
-  return String(tok ?? '').split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+/** Lower-case command name without directory and Windows extension (`C:\x\Git.EXE` -> `git`). */
+export function baseName(tok) {
+  return String(tok ?? '').split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
+}
+
+/**
+ * Skip past the wrapper at t[i] (see WRAPPERS) with its own flags, flag values, leading
+ * positionals and NAME=value words. onValue(flag, value) sees every flag value, onAssign(word)
+ * every NAME=value word. Returns the index of the wrapped command (t.length when none).
+ */
+export function skipWrapperArgs(t, i, { onValue, onAssign } = {}) {
+  const spec = WRAPPERS[baseName(t[i])] ?? {};
+  const values = spec.v ?? [];
+  let pos = spec.pos ?? 0;
+  let k = i + 1;
+  while (k < t.length) {
+    const a = t[k];
+    if (a === '--') return k + 1;
+    if (a.length > 1 && a.startsWith('-')) {
+      let flag = a;
+      let value;
+      const eq = a.indexOf('=');
+      if (a.startsWith('--') && eq !== -1) {
+        flag = a.slice(0, eq);
+        value = a.slice(eq + 1);
+      } else if (values.includes(a)) {
+        value = t[k + 1];
+        k++;
+      } else if (!a.startsWith('--') && a.length > 2 && values.includes(a.slice(0, 2))) {
+        flag = a.slice(0, 2);
+        value = a.slice(2);
+      }
+      if (value !== undefined) onValue?.(flag, value);
+      k++;
+      continue;
+    }
+    if (ASSIGN.test(a)) {
+      onAssign?.(a);
+      k++;
+      continue;
+    }
+    if (pos > 0) {
+      pos--;
+      k++;
+      continue;
+    }
+    break;
+  }
+  return k;
 }
 
 const isPsCommandFlag = (a) => /^-(c|com|comm|comma|comman|command)$/i.test(a);
@@ -361,7 +454,7 @@ const isPsEncodedFlag = (a) =>
   /^-ec$/i.test(a) || (/^-e/i.test(a) && 'encodedcommand'.startsWith(a.slice(1).toLowerCase()));
 
 /** Value of `-f value`, `--flag value` or `--flag=value` for any of names; undefined when absent. */
-function flagValue(args, names) {
+export function flagValue(args, names) {
   for (let k = 0; k < args.length; k++) {
     const a = args[k];
     for (const n of names) {
@@ -466,7 +559,7 @@ function wrapperInfo(segment) {
   if (i >= toks.length) return { bodies: [], opaque: false };
   const carried = carrierBodies(toks, i, segment);
   const done = (bodies, opaque, evalOpaque = false) => ({ bodies: [...carried, ...bodies.map((text) => ({ text }))], opaque, evalOpaque });
-  if (WRAPPER_PREFIXES.has(baseName(toks[i]))) {
+  if (isWrapper(baseName(toks[i]))) {
     // Skip the prefix together with its flags and values, up to the next shell-like token.
     let k = i + 1;
     while (k < toks.length && !SHELL_LIKE.has(baseName(toks[k]))) k++;
@@ -593,23 +686,41 @@ const POP_NAMES = new Set(['popd', 'pop-location']);
 const DECLARE = new Set(['export', 'declare', 'typeset', 'readonly', 'local', 'set']);
 const CD_WORD = /\b(cd|chdir|pushd|popd|set-location|sl|push-location|pop-location)\b/i;
 
-/** State after running one segment: tracks cd/pushd/Set-Location and variable assignments. */
-function nextState(seg, st) {
+/**
+ * State after running one segment: tracks cd/pushd/Set-Location and variable assignments.
+ * States are immutable: a segment that changes nothing returns the same state object, and the
+ * env map is copied only when a variable changes. `id` names the env map in dedup keys.
+ */
+function nextState(seg, st, w) {
   const { assignments, rest } = stripAssignments(seg);
-  const envs = { ...st.envs };
+  let envs = st.envs;
+  const changes = [];
   let { cwd } = st;
+  const own = () => {
+    if (envs === st.envs) envs = { ...st.envs };
+  };
   const setKV = (kv) => {
     const k = kv.indexOf('=');
-    envs[kv.slice(0, k)] = kv.slice(k + 1);
+    const key = kv.slice(0, k);
+    const value = kv.slice(k + 1);
+    if (Object.hasOwn(envs, key) && envs[key] === value) return;
+    own();
+    envs[key] = value;
+    changes.push(kv);
+  };
+  const done = () => {
+    if (envs === st.envs) return cwd === st.cwd ? st : { cwd, envs, id: st.id };
+    if (Object.keys(envs).length > w.maxVars) throw w.over(`more than ${w.maxVars} tracked variables`);
+    return { cwd, envs: Object.freeze(envs), id: w.intern(`${st.id}\0${changes.join('\0')}`) };
   };
   if (!rest) {
     for (const a of assignments) setKV(a);
-    return { cwd, envs };
+    return done();
   }
   const psVar = /^\$([A-Za-z_]\w*)\s*=\s*([\s\S]*)$/.exec(rest);
   if (psVar && !/^env$/i.test(psVar[1])) {
-    envs[psVar[1]] = tokens(psVar[2])[0] ?? '';
-    return { cwd, envs };
+    setKV(`${psVar[1]}=${tokens(psVar[2])[0] ?? ''}`);
+    return done();
   }
   const t = tokens(rest);
   let i = 0;
@@ -619,7 +730,12 @@ function nextState(seg, st) {
   if (DECLARE.has(name)) {
     for (const a of args) if (ASSIGN.test(a)) setKV(a);
   } else if (name === 'unset') {
-    for (const a of args) if (!a.startsWith('-')) delete envs[a];
+    for (const a of args) {
+      if (a.startsWith('-') || !Object.hasOwn(envs, a)) continue;
+      own();
+      delete envs[a];
+      changes.push(`-${a}`);
+    }
   } else if (CD_NAMES.has(name)) {
     const p = psParam(args, ['path', 'literalpath']);
     const target = p ? p.value : args.find((a) => a === '-' || !/^-[A-Za-z]+$/.test(a));
@@ -633,7 +749,7 @@ function nextState(seg, st) {
   } else if (['eval', 'iex', 'invoke-expression', 'source', '.'].includes(name) && CD_WORD.test(rest)) {
     cwd = null;
   }
-  return { cwd, envs };
+  return done();
 }
 
 /**
@@ -642,32 +758,60 @@ function nextState(seg, st) {
  * after an absolute cd, '~'-prefixed after `cd ~`, null when unknown, for example after
  * `cd -`, `popd` or `cd $X`) and `envs` (variables assigned by `export X=`, `X=...;`,
  * `$env:X=`, `set X=` and PowerShell `$x =`). Parenthesised subshells restore the state.
+ * With `budget` ({maxSegments, maxVars}) the walk stops once a limit is passed and the
+ * returned array carries `overBudget` (a short reason).
+ * The `envs` objects are frozen and shared between segments; copy before changing them.
  * @param {string} command
- * @returns {Array<{segment: string, cwd: string | null, envs: Record<string, string>}>}
+ * @param {{maxSegments?: number, maxVars?: number}} [budget]
+ * @returns {Array<{segment: string, cwd: string | null, envs: Readonly<Record<string, string>>}> & {overBudget?: string}}
  */
-export function expandWithState(command) {
+export function expandWithState(command, budget = {}) {
   const out = [];
   const seen = new Set();
-  const emit = (segment, st) => {
-    const key = `${segment}\0${st.cwd}\0${JSON.stringify(st.envs)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    out.push({ segment, cwd: st.cwd, envs: { ...st.envs } });
-    return true;
+  const ids = new Map();
+  const maxSegments = budget.maxSegments ?? Infinity;
+  const OVER = Symbol('over');
+  let overReason = null;
+  const w = {
+    maxVars: budget.maxVars ?? Infinity,
+    // equal derivations (same parent state, same changes) share an id, so both scan passes dedup
+    intern: (k) => {
+      let id = ids.get(k);
+      if (id === undefined) ids.set(k, (id = ids.size + 1));
+      return id;
+    },
+    over: (why) => {
+      overReason = why;
+      return OVER;
+    },
+    emit: (segment, st) => {
+      const key = `${segment}\0${st.cwd}\0${st.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      if (out.length >= maxSegments) throw w.over(`more than ${maxSegments} segments`);
+      out.push({ segment, cwd: st.cwd, envs: st.envs });
+      return true;
+    },
   };
-  walk(String(command ?? ''), { cwd: '.', envs: {} }, 0, emit);
+  try {
+    walk(String(command ?? ''), { cwd: '.', envs: Object.freeze({}), id: 0 }, 0, w);
+  } catch (err) {
+    if (err !== OVER) throw err;
+    out.overBudget = overReason;
+  }
   return out;
 }
 
-function walk(text, state0, depth, emit) {
+function walk(text, state0, depth, w) {
+  const { emit } = w;
   const passes = [scan(text, false, true)];
   if (text.includes('\\')) passes.push(scan(text, true, true));
   for (const items of passes) {
-    let st = { cwd: state0.cwd, envs: { ...state0.envs } };
+    let st = state0;
     const stack = [];
     for (const it of items) {
       if (it === OPEN) {
-        stack.push({ cwd: st.cwd, envs: { ...st.envs } });
+        stack.push(st);
         continue;
       }
       if (it === CLOSE) {
@@ -683,13 +827,13 @@ function walk(text, state0, depth, emit) {
         else {
           for (const b of bodies) {
             const cwd = b.cwdUnknown ? null : b.chdir !== undefined ? joinCwd(st.cwd, b.chdir) : st.cwd;
-            walk(b.text, { cwd, envs: st.envs }, depth + 1, emit);
+            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w);
           }
         }
         if (info.opaque) emit(OPAQUE_STDIN, st);
         if (info.evalOpaque) emit(OPAQUE_EVAL, st);
       }
-      st = nextState(seg, st);
+      st = nextState(seg, st, w);
     }
   }
 }

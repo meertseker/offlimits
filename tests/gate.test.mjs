@@ -65,7 +65,7 @@ test('coordinator push to main passes', () => {
 test('unparseable stdin with a role set blocks', () => {
   const r = run(tmpRepo(), 'not json', 'worker');
   assert.equal(r.status, 2);
-  assert.match(r.stderr, /^offlimits: hook error, blocking because a role is set/);
+  assert.match(r.stderr, /^offlimits: hook error, blocking because the role is worker/);
 });
 
 test('unparseable stdin for coordinator passes', () => {
@@ -104,8 +104,33 @@ test('array and tool_name-less input are malformed', () => {
   assert.equal(logLines(dir).filter((e) => e.decision === 'error').length, 3);
 });
 
-test('solo onError block names the policy, worker keeps the role wording', () => {
+test('solo and coordinator onError block name the policy, worker keeps the role wording', () => {
   const dir = tmpRepo({ onError: 'block' });
   assert.match(run(dir, 'not json').stderr, /^offlimits: hook error, blocking because policy\.onError is block/);
-  assert.match(run(dir, 'not json', 'worker').stderr, /^offlimits: hook error, blocking because a role is set/);
+  assert.match(run(dir, 'not json', 'worker').stderr, /^offlimits: hook error, blocking because the role is worker/);
+  const c = run(dir, 'not json', 'coordinator');
+  assert.equal(c.status, 2);
+  assert.match(c.stderr, /^offlimits: hook error, blocking because policy.onError is block/);
+});
+
+test('ask reasons: production hint only for MCP asks without a production definition', () => {
+  const sql = { tool_name: 'mcp__supabase__execute_sql', tool_input: { query: 'insert into t values (1)' } };
+  const reason = (r) => JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason;
+  assert.match(reason(run(tmpRepo(), sql)), /No production definition in offlimits\.json/);
+  const configured = reason(run(tmpRepo({ production: { projectRefs: ['prodref123'] } }), sql));
+  assert.doesNotMatch(configured, /No production definition/);
+  assert.match(configured, /This asks in solo mode and is denied for workers\. See \/offlimits\./);
+  const shell = reason(run(tmpRepo(), bash('git clean -fdx')));
+  assert.doesNotMatch(shell, /No production definition/);
+  assert.match(shell, /This asks in solo mode and is denied for workers/);
+});
+
+test('worker hook error says the role is worker; solo error allows and logs', () => {
+  const dir = tmpRepo();
+  const w = run(dir, 'not json', 'worker');
+  assert.equal(w.status, 2);
+  assert.equal(w.stderr.split('\n')[0].startsWith('offlimits: hook error, blocking because the role is worker'), true);
+  const s = run(dir, 'not json');
+  assert.equal(s.status, 0);
+  assert.equal(s.stderr, '');
 });

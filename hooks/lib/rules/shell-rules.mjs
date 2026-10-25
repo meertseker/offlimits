@@ -3,10 +3,10 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { stripAssignments, tokenize, tokens, OPAQUE_PREFIX, OPAQUE_DEEP, OPAQUE_EVAL } from '../shell.mjs';
+import { stripAssignments, tokenize, tokens, baseName, flagValue, skipWrapperArgs, WRAPPERS, OPAQUE_PREFIX, OPAQUE_DEEP, OPAQUE_EVAL } from '../shell.mjs';
 import { globMatch } from '../paths.mjs';
 
-const base = (t) => String(t ?? '').split(/[\\/]/).pop().toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '');
+const base = baseName;
 const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const clip = (s) => (s.length > 90 ? `${s.slice(0, 87)}...` : s);
 const ASSIGN = /^[A-Za-z_]\w*=/;
@@ -14,29 +14,7 @@ const DYN = /[`$]|%\w+%/;
 
 // ---------- command parsing ----------
 
-// Wrappers that run the rest of the line: `v` lists flags that take a value, `pos` counts leading positionals to skip.
-const WRAPPER_SPEC = {
-  sudo: { v: ['-u', '-g', '-C', '-D', '-h', '-p', '-r', '-t', '-U', '-T', '--user', '--group', '--chdir', '--host', '--prompt', '--role', '--type', '--other-user', '--close-from', '--command-timeout'] },
-  doas: { v: ['-u', '-C'] },
-  env: { v: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'] },
-  command: {},
-  builtin: {},
-  exec: { v: ['-a'] },
-  nohup: {},
-  time: { v: ['-f', '--format', '-o', '--output'] },
-  nice: { v: ['-n', '--adjustment'] },
-  timeout: { v: ['-s', '--signal', '-k', '--kill-after'], pos: 1 },
-  stdbuf: { v: ['-i', '-o', '-e', '--input', '--output', '--error'] },
-  setsid: {},
-  ionice: { v: ['-c', '-n', '-p', '-P', '-u', '--class', '--classdata', '--pid', '--pgid', '--uid'] },
-  flock: { v: ['-w', '--timeout', '-E', '--conflict-exit-code'], pos: 1 },
-  watch: { v: ['-n', '--interval'] },
-  unbuffer: {},
-  strace: { v: ['-o', '-e', '-p', '-s', '-u', '-E', '-P', '-I', '-b', '-a', '-X', '-O', '-S'] },
-  winpty: {},
-  chronic: {},
-  xargs: { v: ['-I', '-n', '-P', '-L', '-d', '-a', '-E', '-s', '--max-args', '--max-procs', '--delimiter', '--arg-file', '--replace', '--max-lines', '--eof', '--max-chars'] },
-};
+// Wrappers (sudo, env, timeout, chrt, ...) come from the one table in shell.mjs: WRAPPERS.
 const RUNNERS = new Set(['npx', 'bunx', 'pnpx', 'uvx']);
 const RUNNER_VALUE = ['-p', '--package', '--prefix', '-w', '--workspace', '--cache', '--registry', '--userconfig', '--from', '--with', '--python', '--node-options', '--spec', '--index', '--index-url', '--extra-index-url', '--project', '--directory', '--env-file', '--group', '--extra', '-f'];
 const PM_RUNNERS = new Set(['pnpm', 'yarn', 'npm', 'bun']);
@@ -81,50 +59,15 @@ function parseCommand(t, r = t) {
       while (i < t.length && ASSIGN.test(t[i])) envs.push(t[i++]);
       if (i >= t.length) return;
       const w = base(t[i]);
-      const spec = WRAPPER_SPEC[w];
-      if (!spec) return;
+      if (!Object.hasOwn(WRAPPERS, w)) return;
       if (w === 'xargs') xargs = true;
-      i++;
-      let pos = spec.pos ?? 0;
-      while (i < t.length) {
-        const a = t[i];
-        if (a === '--') {
-          i++;
-          break;
-        }
-        if (a.length > 1 && a.startsWith('-')) {
-          let flag = a;
-          let value;
-          const eq = a.indexOf('=');
-          if (a.startsWith('--') && eq !== -1) {
-            flag = a.slice(0, eq);
-            value = a.slice(eq + 1);
-          } else if ((spec.v ?? []).includes(a)) {
-            value = t[i + 1];
-            i++;
-          } else if (!a.startsWith('--') && a.length > 2 && (spec.v ?? []).includes(a.slice(0, 2))) {
-            flag = a.slice(0, 2);
-            value = a.slice(2);
-          }
-          if (value !== undefined) {
-            if (w === 'env' && (flag === '-u' || flag === '--unset')) unset.push(value);
-            if ((w === 'env' && (flag === '-C' || flag === '--chdir')) || (w === 'sudo' && (flag === '-D' || flag === '--chdir'))) chdir = value;
-          }
-          i++;
-          continue;
-        }
-        if (w === 'env' && ASSIGN.test(a)) {
-          envs.push(a);
-          i++;
-          continue;
-        }
-        if (pos > 0) {
-          pos--;
-          i++;
-          continue;
-        }
-        break;
-      }
+      i = skipWrapperArgs(t, i, {
+        onValue: (flag, value) => {
+          if (w === 'env' && (flag === '-u' || flag === '--unset')) unset.push(value);
+          if ((w === 'env' && (flag === '-C' || flag === '--chdir')) || (w === 'sudo' && (flag === '-D' || flag === '--chdir'))) chdir = value;
+        },
+        onAssign: (a) => envs.push(a),
+      });
     }
   };
   const afterRunner = (name) => {
@@ -211,16 +154,6 @@ function positionalIdx(args, valueFlags = []) {
 const positionals = (args, valueFlags = []) => positionalIdx(args, valueFlags).map((k) => args[k]);
 const hasFlag = (args, ...names) => args.some((a) => names.some((n) => a === n || a.startsWith(`${n}=`)));
 const isDry = (args) => args.some((a) => /^--dry-?run(=(?!false$|none$|0$).*)?$/i.test(a));
-
-function flagValue(args, names) {
-  for (let k = 0; k < args.length; k++) {
-    for (const n of names) {
-      if (args[k] === n && k + 1 < args.length) return args[k + 1];
-      if (n.startsWith('--') && args[k].startsWith(`${n}=`)) return args[k].slice(n.length + 1);
-    }
-  }
-  return undefined;
-}
 
 const unsureAction = (ctx) => (ctx.role === 'worker' ? 'deny' : 'ask');
 const unsure = (c, reason) => ({ action: unsureAction(c.ctx), reason, unsure: true });
@@ -653,8 +586,7 @@ function remoteDb(c) {
     const rw = resolveWord(raw, value, env);
     if (rw.unknownVar) {
       if (DB_URL_NAME(rw.unknownVar)) return `${tool} connects through $${rw.unknownVar}, which is treated as remote ${s}.`;
-      if (/[`$]/.test(String(raw).replace(/^"|"$/g, '').replace(/\$\{?[A-Za-z_]\w*\}?/g, ''))) unclear ??= raw;
-      else unclear ??= raw;
+      unclear ??= raw;
       return null;
     }
     let v = rw.value;
@@ -979,7 +911,7 @@ function roleSpoof(c) {
   if (c.info.unset.some((u) => u.toLowerCase() === role.toLowerCase())) return `unsetting ${role} would change the agent's own role ${s}.`;
   const t = c.info.toks;
   let i = 0;
-  while (i < t.length && (WRAPPER_SPEC[base(t[i])] || ASSIGN.test(t[i]) || t[i].startsWith('-'))) {
+  while (i < t.length && (Object.hasOwn(WRAPPERS, base(t[i])) || ASSIGN.test(t[i]) || t[i].startsWith('-'))) {
     if (t[i].toLowerCase().startsWith(`${role.toLowerCase()}=`)) return say;
     i++;
   }
@@ -1026,9 +958,16 @@ function compile(pattern) {
   }
 }
 
-/** Parsed variants of one segment: default, bash and PowerShell escaping, and what follows each bare `--`. */
+/** Most bare `--` tails one segment may have; more makes the segment opaque. */
+const MAX_DASH_TAILS = 32;
+
+/**
+ * Parsed variants of one segment: default, bash and PowerShell escaping, and what follows each bare `--`.
+ * Returns null when the segment has more than MAX_DASH_TAILS bare `--` (too costly to parse every tail).
+ */
 function variants(rest) {
   const out = [];
+  let tails = 0;
   const seen = new Set();
   for (const mode of ['default', 'bash', 'ps']) {
     const t = tokenize(rest, mode);
@@ -1040,7 +979,8 @@ function variants(rest) {
     seen.add(key);
     out.push({ info: parseCommand(toks, raws), primary: mode === 'default' });
     toks.forEach((tk, k) => {
-      if (tk !== '--' || k === toks.length - 1) return;
+      if (tk !== '--' || k === toks.length - 1 || tails > MAX_DASH_TAILS) return;
+      if (++tails > MAX_DASH_TAILS) return;
       const tail = toks.slice(k + 1);
       const tkey = JSON.stringify(tail);
       if (seen.has(tkey)) return;
@@ -1048,7 +988,7 @@ function variants(rest) {
       out.push({ info: parseCommand(tail, raws.slice(k + 1)), primary: false });
     });
   }
-  return out;
+  return tails > MAX_DASH_TAILS ? null : out;
 }
 
 const kvObject = (list) => Object.fromEntries(list.map((a) => [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)]));
@@ -1076,7 +1016,15 @@ export function checkSegment(segment, ctx) {
     };
   }
   const env0 = { ...(ctx.segEnvs ?? {}), ...kvObject(assignments) };
-  const cs = variants(rest).map((v) => ({
+  const vs = variants(rest);
+  if (vs === null) {
+    return {
+      action: ctx.role === 'solo' ? 'ask' : 'deny',
+      rule: 'opaque-shell',
+      reason: `Command has more than ${MAX_DASH_TAILS} bare "--" separators in one segment, too costly to inspect.`,
+    };
+  }
+  const cs = vs.map((v) => ({
     segment, rest, assignments, ctx, info: v.info, primary: v.primary, env: { ...env0, ...kvObject(v.info.envs) },
   }));
   const allowed = (policy.allow ?? []).some((p) => compile(p)?.test(rest));

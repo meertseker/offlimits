@@ -12,7 +12,7 @@ Sensitive? Use private vulnerability reporting instead (Security tab, Report a v
 ```
 ```
 
-**Role** (the active role, e.g. dev, reviewer):
+**Role** (the active role: coordinator, worker or solo):
 
 **Expected** (allow or deny, and which rule id):
 

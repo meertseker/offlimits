@@ -2,35 +2,9 @@
 
 import os from 'node:os';
 import { globMatch, normalizeRel, resolvePath, isAbsolutePath, isAncestorOrSelf, expandHome } from '../paths.mjs';
-import { tokens, stripAssignments } from '../shell.mjs';
+import { tokens, stripAssignments, baseName, skipWrapperArgs, WRAPPERS } from '../shell.mjs';
 
 const FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
-
-// Wrappers that run the next command. Value: flags that take a separate value, and how many
-// leading positionals (duration, priority, lock file...) the wrapper itself consumes.
-const WRAPPERS = new Map([
-  ['sudo', { values: ['-u', '-g', '-p', '-C', '-D', '-h', '-r', '-t', '-U', '-T'], skip: 0 }],
-  ['doas', { values: ['-u', '-C'], skip: 0 }],
-  ['env', { values: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'], skip: 0 }],
-  ['command', { values: [], skip: 0 }],
-  ['builtin', { values: [], skip: 0 }],
-  ['exec', { values: ['-a'], skip: 0 }],
-  ['time', { values: ['-f', '--format', '-o', '--output'], skip: 0 }],
-  ['nohup', { values: [], skip: 0 }],
-  ['nice', { values: ['-n', '--adjustment'], skip: 0 }],
-  ['ionice', { values: ['-c', '--class', '-n', '--classdata', '-p', '-P', '-u'], skip: 0 }],
-  ['timeout', { values: ['-s', '--signal', '-k', '--kill-after'], skip: 1 }],
-  ['stdbuf', { values: ['-i', '-o', '-e'], skip: 0 }],
-  ['setsid', { values: [], skip: 0 }],
-  ['flock', { values: ['-w', '--timeout', '-E', '--conflict-exit-code'], skip: 1 }],
-  ['chrt', { values: [], skip: 1 }],
-  ['taskset', { values: [], skip: 1 }],
-  ['xargs', { values: ['-I', '-n', '-P', '-L', '-s', '-d', '-E', '-a'], skip: 0 }],
-  ['watch', { values: ['-n', '--interval'], skip: 0 }],
-  ['unbuffer', { values: [], skip: 0 }],
-  ['winpty', { values: [], skip: 0 }],
-  ['strace', { values: ['-o', '-e', '-p', '-s'], skip: 0 }],
-]);
 
 // commands whose every positional is removed or moved away (parents count too)
 const REMOVERS = new Set(['rm', 'rmdir', 'unlink', 'del', 'erase', 'rd', 'ri', 'remove-item']);
@@ -55,7 +29,7 @@ const COPY_VALUES = {
 const GLOB = /[*?[{]/;
 const DISABLE_HOOKS = /disableAllHooks/i;
 
-const base = (tok) => String(tok).replaceAll('\\', '/').split('/').pop().replace(/\.exe$/i, '').toLowerCase();
+const base = baseName;
 const isRemote = (p) => /^[^/\\]{2,}:/.test(p) && !/^[A-Za-z]:[\\/]?/.test(p);
 
 function parentChain(globs) {
@@ -121,8 +95,8 @@ function candidates(ctx, ancestors) {
     for (const lit of parentChain(globs)) {
       if (!lit) continue;
       const segs = lit.split('/');
-      const upto = ancestors ? segs.length : segs.length; // the literal itself
-      for (let n = ancestors ? 1 : upto; n <= upto; n++) out.push(resolvePath(root, segs.slice(0, n).join('/')));
+      // the literal itself, and with ancestors every parent of it too
+      for (let n = ancestors ? 1 : segs.length; n <= segs.length; n++) out.push(resolvePath(root, segs.slice(0, n).join('/')));
     }
     if (ancestors) {
       let r = resolvePath(root, '.');
@@ -148,11 +122,39 @@ function candidates(ctx, ancestors) {
   return out;
 }
 
-/** One level of `{a,b}` brace expansion, repeated. */
+/** Most words one brace expansion may produce before the target counts as unsure. */
+export const MAX_BRACE_WORDS = 256;
+/** Most distinct write targets judged per segment or command line before the rest count as unsure. */
+export const MAX_TARGETS = 256;
+
+/** Distinct targets (by path and options), and whether the list was cut at MAX_TARGETS. */
+function distinct(targets) {
+  const seen = new Map();
+  for (const t of targets) {
+    const key = `${t.path}\0${t.ancestors ? 1 : 0}${t.dest ? 1 : 0}\0${t.dir ?? ''}`;
+    if (!seen.has(key)) seen.set(key, t);
+  }
+  const list = [...seen.values()];
+  return { list: list.slice(0, MAX_TARGETS), cut: list.length > MAX_TARGETS ? list[MAX_TARGETS] : null };
+}
+
+/** `{a,b}` brace expansion, in order; null when it would produce more than MAX_BRACE_WORDS words. */
 function braces(p) {
-  const m = /\{([^{}]*,[^{}]*)\}/.exec(p);
-  if (!m) return [p];
-  return m[1].split(',').flatMap((alt) => braces(p.slice(0, m.index) + alt + p.slice(m.index + m[0].length)));
+  const out = [];
+  const stack = [p];
+  while (stack.length) {
+    const s = stack.pop();
+    const m = /\{([^{}]*,[^{}]*)\}/.exec(s);
+    if (!m) {
+      out.push(s);
+      if (out.length > MAX_BRACE_WORDS) return null;
+      continue;
+    }
+    const alts = m[1].split(',');
+    if (stack.length + alts.length > MAX_BRACE_WORDS * 4) return null;
+    for (let k = alts.length - 1; k >= 0; k--) stack.push(s.slice(0, m.index) + alts[k] + s.slice(m.index + m[0].length));
+  }
+  return out;
 }
 
 const globSafe = (p) => p.replace(/\[[^\]/]*\]/g, '?');
@@ -180,14 +182,18 @@ function riskySegments(ctx) {
  */
 function judge(t, ctx, baseDir) {
   const home = homeOf(ctx);
-  for (const raw of braces(expandHome(t.path, home))) {
+  const words = braces(expandHome(t.path, home));
+  if (words === null) return { unsure: t.path, why: 'braces' };
+  // a decision-wide budget (ctx.work, set by decide) caps the brace words judged over all targets
+  if (ctx.work && words.length > 1 && (ctx.work.words -= words.length) < 0) return { unsure: t.path, why: 'brace-budget' };
+  for (const raw of words) {
     let p = raw;
     if (t.dir) p = `${expandHome(t.dir, home)}/${p}`;
     const abs = isAbsolutePath(p);
     if (!abs && baseDir === null) {
       const segs = p.replaceAll('\\', '/').split('/');
       const risky = riskySegments(ctx);
-      if (segs.some((s) => s === '..' || GLOB.test(s) || risky.has(s.toLowerCase()))) return { unsure: raw };
+      if (segs.some((s) => s === '..' || GLOB.test(s) || risky.has(s.toLowerCase()))) return { unsure: raw, why: raw.includes('{}') ? 'find' : 'cwd' };
       continue;
     }
     const full = resolvePath(baseDir ?? ctx.cwd, globSafe(p));
@@ -208,12 +214,13 @@ function judge(t, ctx, baseDir) {
   return null;
 }
 
-function deny(p, how, covers) {
+function deny(p, how, covers, ctx) {
   const extra = covers && GLOB.test(p) ? ` (it covers "${covers}")` : '';
+  const who = ctx?.role === 'worker' ? 'a worker' : `the ${ctx?.role ?? 'solo'} role`;
   return {
     action: 'deny',
     rule: 'protected-file',
-    reason: `${how} protected path "${p}"${extra} is not allowed for a worker (it holds hook or policy configuration).`,
+    reason: `${how} protected path "${p}"${extra} is not allowed for ${who} (it holds hook or policy configuration).`,
   };
 }
 
@@ -225,11 +232,17 @@ function disableHooks(where) {
   };
 }
 
-function unsureDecision(p, ctx) {
+function unsureDecision(p, ctx, why) {
+  const what = {
+    braces: `Writing to "${p}", whose brace expansion has more than ${MAX_BRACE_WORDS} words`,
+    'brace-budget': `Writing to "${p}" after the brace expansions of this command passed the hook's budget`,
+    find: `Writing to "${p}", the files find -exec picks at run time`,
+    targets: `Writing to more than ${MAX_TARGETS} paths (from "${p}" on)`,
+  }[why] ?? `Writing to "${p}" after a directory change the hook cannot follow`;
   return {
     action: ctx.role === 'solo' ? 'ask' : 'deny',
     rule: 'protected-file',
-    reason: `Writing to "${p}" after a directory change the hook cannot follow; it may be a protected path.`,
+    reason: `${what}; it may be a protected path.`,
   };
 }
 
@@ -262,7 +275,7 @@ export function checkFileTool(toolName, toolInput, ctx) {
   const p = toolInput?.file_path ?? toolInput?.notebook_path ?? toolInput?.path;
   if (typeof p === 'string' && p !== '') {
     const abs = resolvePath(ctx.cwd ?? ctx.repoRoot, expandHome(p, homeOf(ctx)));
-    if (hitAbs(abs, ctx, false)) return deny(p, `${toolName} on`);
+    if (hitAbs(abs, ctx, false)) return deny(p, `${toolName} on`, undefined, ctx);
   }
   let text = '';
   try {
@@ -352,32 +365,8 @@ function skipWrappers(t) {
       i++;
       continue;
     }
-    const w = WRAPPERS.get(base(t[i]));
-    if (!w) break;
-    i++;
-    let skip = w.skip;
-    while (i < t.length) {
-      const a = t[i];
-      if (a === '--') {
-        i++;
-        break;
-      }
-      if (/^[A-Za-z_]\w*=/.test(a)) {
-        i++;
-        continue;
-      }
-      if (a.startsWith('-')) {
-        const flag = a.split('=')[0];
-        i += w.values.includes(flag) && !a.includes('=') ? 2 : 1;
-        continue;
-      }
-      if (skip > 0) {
-        skip--;
-        i++;
-        continue;
-      }
-      break;
-    }
+    if (!Object.hasOwn(WRAPPERS, base(t[i]))) break;
+    i = skipWrapperArgs(t, i);
   }
   return i;
 }
@@ -436,7 +425,7 @@ function writeTargets(segment) {
   else if (cmd === 'dd') {
     add(args.filter((a) => a.startsWith('of=')).map((a) => a.slice(3)));
   } else if (cmd === 'git') {
-    git(args, add, copyTo);
+    git(args, add);
   } else if (cmd === 'curl') {
     curl(args, add);
   } else if (cmd === 'wget') {
@@ -585,7 +574,7 @@ function wget(args, add) {
 }
 
 /** git subcommands that write, move or delete working-tree files. */
-function git(args, add, copyTo) {
+function git(args, add) {
   let k = 0;
   const dirs = [];
   while (k < args.length && args[k].startsWith('-')) {
@@ -628,7 +617,6 @@ function git(args, add, copyTo) {
       for (const s of pos.slice(0, -1)) put([`${dest.replace(/[\\/]+$/, '')}/${basenameOf(s)}`], { ancestors: true, dest: true });
     }
   }
-  void copyTo;
 }
 
 /**
@@ -640,14 +628,15 @@ export function checkBashWrite(segment, ctx) {
   // a command that writes anything while mentioning disableAllHooks (reads such as grep pass)
   if (targets.length && DISABLE_HOOKS.test(String(segment ?? ''))) return disableHooks('Command');
   const baseDir = segmentBase(ctx);
-  let pending = null;
-  for (const t of targets) {
+  const { list: todo, cut } = distinct(targets);
+  let pending = cut && { unsure: cut.path, why: 'targets' };
+  for (const t of todo) {
     const j = judge(t, ctx, baseDir);
     if (!j) continue;
-    if (j.hit) return deny(j.path, j.ancestors ? 'Writing to, moving or deleting' : 'Writing to', j.hit);
-    pending ??= j.unsure;
+    if (j.hit) return deny(j.path, j.ancestors ? 'Writing to, moving or deleting' : 'Writing to', j.hit, ctx);
+    pending ??= j;
   }
-  return pending !== null ? unsureDecision(pending, ctx) : null;
+  return pending !== null ? unsureDecision(pending.unsure, ctx, pending.why) : null;
 }
 
 /** Redirections over the whole command line (the segmenter splits `>|`, so segments alone miss it). */
@@ -656,9 +645,12 @@ export function checkRedirects(command, ctx) {
   const targets = redirectTargets(s).map((path) => ({ path }));
   // .NET calls span parentheses the segmenter splits on, so read them from the whole line too
   dotnet(s, (paths, opts = {}) => targets.push(...paths.map((path) => ({ path, ...opts }))));
-  for (const t of targets) {
+  const { list: todo, cut } = distinct(targets);
+  let pending = cut && { unsure: cut.path, why: 'targets' };
+  for (const t of todo) {
     const j = judge(t, ctx, ctx.cwd);
-    if (j?.hit) return deny(t.path, j.ancestors ? 'Writing to, moving or deleting' : 'Writing to');
+    if (j?.hit) return deny(t.path, j.ancestors ? 'Writing to, moving or deleting' : 'Writing to', undefined, ctx);
+    if (j?.unsure !== undefined) pending ??= j;
   }
-  return null;
+  return pending !== null ? unsureDecision(pending.unsure, ctx, pending.why) : null;
 }

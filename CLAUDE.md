@@ -26,7 +26,7 @@ Run all three and paste the result into the delivery template:
 
 ```
 node --test
-node hooks/selftest.mjs
+node hooks/selftest.mjs --all
 claude plugin validate .
 ```
 

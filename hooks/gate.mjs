@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // PreToolUse entry point. Must never throw out of the top level.
 import { readStdin } from './lib/input.mjs';
-import { loadPolicy, DEFAULT_POLICY } from './lib/policy.mjs';
+import { loadPolicy, DEFAULT_POLICY, productionConfigured } from './lib/policy.mjs';
 import { resolveRole } from './lib/role.mjs';
-import { repoRoot, commonRoot, currentBranch } from './lib/git.mjs';
+import { repoRoot, commonRoot, currentBranch, repoInfo } from './lib/git.mjs';
 import { decide } from './lib/rules.mjs';
 import { denyMessage, askReason, summarize } from './lib/format.mjs';
 import { appendLog } from './lib/log.mjs';
 
-function record(cwd, input, role, decision, rule, summary) {
+/** Append one log entry under logRoot, the directory the caller already computed (common root, repo root or cwd). */
+function record(logRoot, input, role, decision, rule, summary) {
   try {
-    appendLog(commonRoot(cwd) ?? repoRoot(cwd) ?? cwd, {
+    appendLog(logRoot, {
       at: new Date().toISOString(),
       role,
       tool: String(input?.tool_name ?? ''),
@@ -39,9 +40,9 @@ function fail(err, input) {
     const message = err instanceof Error ? err.message : String(err);
     const block = policy.onError === 'block' || (policy.onError === 'auto' && role === 'worker');
     code = block ? 2 : 0;
-    record(cwd, input, role, 'error', '', message);
+    record(commonRoot(cwd) ?? repoRoot(cwd) ?? cwd, input, role, 'error', '', message);
     if (block) {
-      const why = role === 'solo' ? 'blocking because policy.onError is block' : 'blocking because a role is set';
+      const why = role === 'worker' ? 'blocking because the role is worker' : 'blocking because policy.onError is block';
       process.stderr.write(`offlimits: hook error, ${why}: ${message}\n`);
     }
   } catch {
@@ -57,13 +58,16 @@ function main() {
       throw new Error('could not read hook input (empty, invalid, or missing tool_name)');
     }
     const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd();
-    const root = repoRoot(cwd);
+    // one git spawn for the worktree root, the common root and the branch of cwd
+    const info = repoInfo(cwd);
+    const root = info.root;
     const { policy } = loadPolicy(root ?? cwd);
     const role = resolveRole(input, process.env, policy);
-    const d = decide(input, { role, policy, currentBranch, cwd, repoRoot: root, commonRoot: commonRoot(cwd) });
+    const branchOf = (dir) => (dir === cwd && info.branch ? info.branch : currentBranch(dir));
+    const d = decide(input, { role, policy, currentBranch: branchOf, cwd, repoRoot: root, commonRoot: info.common });
     if (d.action === 'allow') return;
     const summary = summarize(input);
-    record(cwd, input, role, d.action, d.rule, summary);
+    record(info.common ?? root ?? cwd, input, role, d.action, d.rule, summary);
     if (d.action === 'deny') {
       process.stderr.write(denyMessage({ ...d, summary }, role) + '\n');
       process.exitCode = 2;
@@ -73,7 +77,7 @@ function main() {
           hookSpecificOutput: {
             hookEventName: 'PreToolUse',
             permissionDecision: 'ask',
-            permissionDecisionReason: askReason(d),
+            permissionDecisionReason: askReason(d, { productionConfigured: productionConfigured(policy) }),
           },
         }),
       );

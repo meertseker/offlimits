@@ -30,6 +30,10 @@ test('offlimits skill', () => {
   assert.ok(!body.includes('—') && !fm.description.includes('—'), 'no em dash');
   assert.ok(body.indexOf('CLAUDE_PLUGIN_ROOT') < body.indexOf('skills/'), 'CLAUDE_PLUGIN_ROOT is mentioned first');
   assert.match(body, /parent of the `skills\/` directory/);
+  assert.ok(body.includes(`node "<root>/hooks/explain.mjs" '<command>'`), 'explain takes one single-quoted argument');
+  assert.ok(!body.includes('explain.mjs -- '), 'no -- word form');
+  assert.match(body, /selftest\.mjs" --all/);
+  assert.match(body, /10-minute timeout/);
 });
 
 test('offlimits-roles skill', () => {

@@ -18,9 +18,23 @@ test('deny message next step for solo', () => {
 });
 
 test('ask reason mentions /offlimits', () => {
-  const r = askReason({ reason: 'Supabase write' });
+  const r = askReason({ rule: 'supabase-mcp', reason: 'Supabase write' });
   assert.match(r, /\/offlimits/);
   assert.match(r, /^offlimits: Supabase write\./);
+});
+
+test('ask reason: production hint only for supabase-mcp / vercel-mcp without a production definition', () => {
+  for (const rule of ['supabase-mcp', 'vercel-mcp']) {
+    assert.match(askReason({ rule, reason: 'x' }), /No production definition in offlimits\.json/);
+    assert.match(askReason({ rule, reason: 'x' }, { productionConfigured: false }), /No production definition/);
+    const configured = askReason({ rule, reason: 'x' }, { productionConfigured: true });
+    assert.doesNotMatch(configured, /No production definition/);
+    assert.match(configured, /This asks in solo mode and is denied for workers\. See \/offlimits\./);
+  }
+  for (const rule of ['git-push-protected', 'opaque-shell', 'agent-spawn', 'mcp-destructive', 'protected-file', 'git-clean']) {
+    const r = askReason({ rule, reason: 'Some reason.' });
+    assert.equal(r, 'offlimits: Some reason. This asks in solo mode and is denied for workers. See /offlimits.');
+  }
 });
 
 test('summarize per tool', () => {

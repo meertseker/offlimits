@@ -123,7 +123,7 @@ What the hook does when it crashes or cannot parse its input. `auto` blocks when
 
 The hard rules are `git-push-protected`, `git-branch-protected`, `gh-write`, `supabase-remote`, `remote-db`, `deploy`, `publish`, `role-spoof`, `protected-file`, `github-mcp`, `extra-deny` and `mcp-write`. Solo mode denies `supabase-mcp` and `vercel-mcp` writes too when the server is in `production.mcpServers` or the call names a project in `production.projectRefs`.
 
-"Unsure" means the hook cannot tell whether a call is safe: a push whose destination is built from a variable or follows a checkout in the same command, a relative write after a `cd` it cannot follow, or a GitHub MCP file write that names no branch. Unsure calls carry the id of the rule they would fall under.
+"Unsure" means the hook cannot tell whether a call is safe: a push whose destination is computed by `$(...)`, backticks or another complex form, or that follows a checkout of such a branch in the same command, a relative write after a `cd` it cannot follow, a write command run by `find -exec`, or a GitHub MCP file write that names no branch. An unknown plain `$VAR` refspec (`git push origin $TARGET`) is not unsure: it falls back to the current branch, so it is allowed on a feature branch and denied on a protected one. Unsure calls carry the id of the rule they would fall under.
 
 ## GitHub MCP, destructive MCP tools and child agents
 
@@ -138,7 +138,9 @@ For `git-push-protected`, when a push has no explicit destination and the hook c
 
 ## Segments
 
-Shell commands are split on `;`, `&&`, `||`, `|` and newlines. `bash -c`, `sh -c`, `pwsh -Command`, `cmd /c`, `eval`, `$(...)` and backticks are unwrapped, and leading `VAR=value` assignments, `sudo`, `env`, `time` and similar wrappers are stripped, before each segment is matched.
+Shell commands are split on `;`, `&&`, `||`, `|` and newlines. `bash -c`, `sh -c`, `pwsh -Command`, `cmd /c`, `eval`, `$(...)` and backticks are unwrapped, and leading `VAR=value` assignments, `sudo`, `env`, `time`, `timeout`, `nice`, `chrt`, `taskset`, `chronic` and similar wrappers are stripped, before each segment is matched. All rules share one wrapper table (`WRAPPERS` in `hooks/lib/shell.mjs`).
+
+So that the hook always answers inside Claude Code's hook timeout, a command longer than 64 KB, with more than 1000 distinct segments or more than 200 tracked variables is not inspected and falls under `opaque-shell` (ask in solo mode, deny for a worker). The smaller per-command limits are listed in [limits.md](limits.md).
 
 ## Log
 

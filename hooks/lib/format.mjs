@@ -22,9 +22,20 @@ export function denyMessage(d, role) {
   ].join('\n');
 }
 
-export function askReason(d) {
+const PROD_ASK_RULES = new Set(['supabase-mcp', 'vercel-mcp']);
+
+/**
+ * permissionDecisionReason for an ask. The "no production definition" hint applies only to the
+ * Supabase and Vercel MCP rules, and only while offlimits.json defines no production.
+ * @param {{rule?: string, reason?: string}} d
+ * @param {{productionConfigured?: boolean}} [opts]
+ */
+export function askReason(d, opts = {}) {
   const reason = String(d.reason ?? '').replace(/\.+$/, '');
-  return `offlimits: ${reason}. No production definition in offlimits.json, so this asks instead of blocking. See /offlimits.`;
+  const tail = PROD_ASK_RULES.has(d.rule) && !opts.productionConfigured
+    ? 'No production definition in offlimits.json, so this asks instead of blocking. See /offlimits.'
+    : 'This asks in solo mode and is denied for workers. See /offlimits.';
+  return `offlimits: ${reason}. ${tail}`;
 }
 
 /** SessionStart context banner. */

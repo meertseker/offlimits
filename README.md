@@ -57,7 +57,8 @@ Shell rules apply to `Bash` and `PowerShell` calls. Commands are split on `;`, `
 | `role-spoof` | any command that assigns `OFFLIMITS_ROLE`, so an agent cannot promote itself |
 | `protected-file` | writes to `.claude/settings.json`, `.claude/hooks/**`, `offlimits.json` and `.github/workflows/**`, by file tools or by `>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content` and similar |
 | `agent-spawn` | a worker starting another agent CLI (`claude`, `codex`, `aider`, `gemini`), which would run without the worker marker; solo asks |
-| `opaque-shell` | a shell that reads its commands from stdin, which the hook cannot inspect |
+| `git-clean` | `git clean -x` or `-X`, which also deletes ignored files such as `.env` and local databases; solo asks, `-n` passes |
+| `opaque-shell` | a shell that reads its commands from stdin, `eval` of generated text, nesting deeper than 8 levels, and commands too large to inspect in time (over 64 KB, 1000 segments or 200 variables); solo asks |
 | `extra-deny` | your own regexes from `offlimits.json` |
 | `supabase-mcp` | Supabase MCP `apply_migration`, `deploy_edge_function`, `create_edge_function_secret`, branch merge, reset, rebase and delete, and `execute_sql` containing write keywords, for example INSERT, UPDATE, DELETE, ALTER, DROP, TRUNCATE, GRANT, COPY, MERGE |
 | `vercel-mcp` | any Vercel MCP tool that is not a read |
@@ -75,9 +76,9 @@ The role comes only from the `OFFLIMITS_ROLE` environment variable that you set 
 |---|---|---|
 | `coordinator` | `OFFLIMITS_ROLE=coordinator`, main session only | Everything. This is the one session that merges and deploys |
 | `worker` | `OFFLIMITS_ROLE=worker`, and any subagent (the hook input carries an `agent_id`) unless its `agent_type` is in `trustedAgentTypes` | Every rule above denies |
-| `solo` | variable not set, or set to anything other than `coordinator` or `worker` | Hard rules deny. `db-migrate`, `opaque-shell`, and `supabase-mcp` and `vercel-mcp` writes ask unless the server or project is listed under `production` |
+| `solo` | variable not set, or set to anything other than `coordinator` or `worker` | Hard rules deny. `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp` and `vercel-mcp` writes ask; those MCP writes deny when the server or project is listed under `production` |
 
-If the hook itself fails, a worker is blocked (fail closed); a coordinator or solo session is let through, with a log entry and a visible warning. Change this with `onError`.
+If the hook itself fails, `onError: "auto"` blocks only for workers (fail closed). Coordinator and solo sessions allow the call and log the error; the warning appears in the next session banner and in `/offlimits`, not at the moment of the call. Change this with `onError`.
 
 ## Why a hook and not a prompt
 
@@ -132,11 +133,11 @@ offlimits reads the text of a tool call. It is not a sandbox, and it does not cl
 - Wrapper chains deeper than 8 levels stop expanding.
 - `git push --dry-run` to a protected branch is denied (conservative), and `git push <url>` with no refspec falls back to the current branch.
 
-The full list, with mitigations, is in [docs/limits.md](docs/limits.md). A limit you find becomes an issue and either a fix or a line there within 24 hours. For a boundary that holds against a determined agent, also give it credentials that cannot touch production.
+The full list, with mitigations, is in [docs/limits.md](docs/limits.md). A limit you report is triaged within 48 h and gets a fix or a line there within 7 days (see [SECURITY.md](SECURITY.md)). For a boundary that holds against a determined agent, also give it credentials that cannot touch production.
 
 ## Built in production
 
-The hook started as the gate of a school-management SaaS where up to 37 Claude Code sessions worked in parallel on one repository, with a single coordinator session merging and deploying. Every other session was physically blocked from doing either. It is now the gate of Usta, an AI software team for family businesses; this plugin is that hook, generalised.
+The hook started as the gate of a school-management SaaS where up to 37 Claude Code sessions worked in parallel on one repository, with a single coordinator session merging and deploying. Every other session was physically blocked from doing either. This plugin is that hook, generalised. It will also be the gate of Usta, an AI software team for family businesses.
 
 ## Incidents this would have caught
 

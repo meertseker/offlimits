@@ -200,3 +200,45 @@ test('carriers: Invoke-Expression, Start-Process, Invoke-Command, find -exec, fl
     assert.ok(expand(c).includes('git push'), c);
   }
 });
+
+test('one wrapper table, baseName and flagValue are exported and shared', async () => {
+  const shell = await import('../hooks/lib/shell.mjs');
+  for (const w of ['sudo', 'env', 'timeout', 'chrt', 'taskset', 'chronic', 'nice', 'xargs']) assert.ok(Object.hasOwn(shell.WRAPPERS, w), w);
+  assert.equal(shell.baseName('C:/Git/bin/GIT.EXE'), 'git');
+  assert.equal(shell.flagValue(['--user=root'], ['--user']), 'root');
+  assert.equal(shell.skipWrapperArgs(['sudo', '--user', 'root', 'rm', 'x'], 0), 3);
+  assert.equal(shell.skipWrapperArgs(['chrt', '-f', '10', 'git', 'push'], 0), 3);
+  assert.equal(shell.skipWrapperArgs(['taskset', '-c', '0,1', 'make'], 0), 3);
+  const fs = await import('node:fs');
+  for (const f of ['hooks/lib/rules/shell-rules.mjs', 'hooks/lib/rules/file-rules.mjs']) {
+    const src = fs.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
+    assert.ok(src.includes('WRAPPERS') && src.includes('skipWrapperArgs'), `${f} uses the shared table`);
+    assert.ok(!/const WRAPPER_SPEC|new Map\(\[\s*\['sudo'/.test(src), `${f} has no private wrapper table`);
+  }
+});
+
+test('expandWithState shares frozen env maps and stops at its budget', () => {
+  const segs = expandWithState('A=1; echo a; echo b; B=2; echo c');
+  const a = segs.find((s) => s.segment === 'echo a');
+  const b = segs.find((s) => s.segment === 'echo b');
+  assert.equal(a.envs, b.envs, 'unchanged state is not copied');
+  assert.ok(Object.isFrozen(a.envs));
+  assert.deepEqual(segs.find((s) => s.segment === 'echo c').envs, { A: '1', B: '2' });
+  const over = expandWithState(Array.from({ length: 20 }, (_, i) => `echo ${i}`).join(';'), { maxSegments: 10 });
+  assert.match(over.overBudget, /more than 10 segments/);
+  const vars = expandWithState(Array.from({ length: 20 }, (_, i) => `V${i}=x`).join(';'), { maxVars: 5 });
+  assert.match(vars.overBudget, /more than 5 tracked variables/);
+  // both scan passes (backslash in the text) still dedup
+  const dup = expandWithState(String.raw`X=1; echo C:\a; echo b`);
+  assert.equal(dup.filter((s) => s.segment === 'echo b').length, 1);
+});
+
+test('clean strips keywords and braces in linear time', () => {
+  assert.deepEqual(segments('{ { git push origin main; }; }'), ['git push origin main']);
+  assert.deepEqual(segments('if true; then git push; fi'), ['true', 'git push', 'fi']);
+  assert.deepEqual(segments('time -p make'), ['make']);
+  assert.deepEqual(segments('done'), ['done']);
+  const t = performance.now();
+  segments(`${'{ '.repeat(30000)}true`);
+  assert.ok(performance.now() - t < 500);
+});

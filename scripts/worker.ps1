@@ -8,23 +8,26 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $pattern = '^[a-z0-9][a-z0-9-]{1,38}$'
+$basePattern = '^[\w./-]+$'
 
-function Run([string]$cmd) {
-  if ($DryRun) { Write-Host "[dry-run] $cmd"; return }
-  Invoke-Expression $cmd
-  if ($LASTEXITCODE) { throw "failed: $cmd" }
+# Runs git directly with an argument list, so no argument is ever evaluated as PowerShell code.
+function Git([string[]]$GitArgs) {
+  if ($DryRun) { Write-Host "[dry-run] git $($GitArgs -join ' ')"; return }
+  & git @GitArgs
+  if ($LASTEXITCODE) { throw "failed: git $($GitArgs -join ' ')" }
 }
 
 if ($Remove) {
   if ($Remove -notmatch $pattern) { throw "Invalid name '$Remove' (must match $pattern)" }
-  Run "git worktree remove ../offlimits-$Remove"
+  Git @('worktree', 'remove', "../offlimits-$Remove")
   return
 }
 if (-not $Lane) { throw 'Usage: worker.ps1 -Lane <name> [-Base origin/main] [-Model sonnet|opus] [-NoLaunch] [-DryRun] | -Remove <name>' }
 if ($Lane -notmatch $pattern) { throw "Invalid lane '$Lane' (must match $pattern)" }
+if ($Base -notmatch $basePattern -or $Base.StartsWith('-')) { throw "Invalid base '$Base' (must match $basePattern and not start with -)" }
 
-Run 'git fetch origin'
-Run "git worktree add -b feat/$Lane ../offlimits-$Lane $Base"
+Git @('fetch', 'origin')
+Git @('worktree', 'add', '-b', "feat/$Lane", "../offlimits-$Lane", $Base)
 if ($NoLaunch) { Write-Host "Worktree ready: ../offlimits-$Lane"; return }
 
 $env:OFFLIMITS_ROLE = 'worker'

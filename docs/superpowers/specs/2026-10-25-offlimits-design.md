@@ -15,7 +15,7 @@ The hook was first written for a production SaaS (a school management platform) 
 1. Zero-config safety for a solo user: install, and pushes to protected branches, remote DB pushes, deploy commands and dangerous MCP calls are blocked; MCP writes with no production definition *ask* instead of blocking.
 2. Role model for teams of sessions: `OFFLIMITS_ROLE=coordinator` lifts the gate; every other session, and every subagent, is a worker.
 3. The agent cannot promote itself: role comes only from the environment the human set; the policy file and the hook config are write-protected from workers.
-4. Honest failure behaviour: fail-closed when a role is set (team mode), fail-open with a log and a visible warning in solo mode. Never silent.
+4. Honest failure behaviour: fail-closed for workers; coordinator and solo sessions allow the call, log the error and warn in the next session banner. Never silent.
 5. Zero dependencies, Node ≥ 20 built-ins only, no network, no telemetry, readable source. Runs on Windows (Git Bash and PowerShell tool), macOS, Linux.
 6. Every rule has at least one blocking and one allowing test; a self-test command shows the gate working in the user's own session.
 
@@ -24,7 +24,7 @@ The hook was first written for a production SaaS (a school management platform) 
 - Not an orchestrator: it does not open sessions, assign tasks or manage worktrees. It is a policy layer over Claude Code's native primitives.
 - Not a general "dangerous command" collection (`rm -rf`, fork bombs): the focus is production and shared branches. The README links to projects that cover the rest.
 - No SaaS, API key, LLM call or telemetry. Ever, in v0.x.
-- No claim of being unbypassable. The README has a *Limits* section listing known bypasses (for example inline interpreters such as `node -e` that call git). A limit found by a user becomes an issue, and either a fix or a line in that section within 24 hours.
+- No claim of being unbypassable. The README has a *Limits* section listing known bypasses (for example inline interpreters such as `node -e` that call git). A limit found by a user becomes an issue, and it is triaged within 48 h and gets either a fix or a line in that section within 7 days (SECURITY.md).
 
 ## Behaviour
 
@@ -80,7 +80,7 @@ Solo mode with no `production` section: `supabase-mcp` and `vercel-mcp` write ca
 }
 ```
 
-`production.hosts` adds hostnames to the `remote-db` rule. `onError`: `auto` (block in team mode, allow in solo), `block`, `allow`. Invalid JSON or unknown keys: the hook uses defaults, logs the problem and the session banner warns.
+`production.hosts` adds hostnames to the `remote-db` rule. `onError`: `auto` (block only for workers; coordinator and solo allow and log), `block`, `allow`. Invalid JSON or unknown keys: the hook uses defaults, logs the problem and the session banner warns.
 
 ### Hook contract
 
@@ -88,7 +88,7 @@ Solo mode with no `production` section: `supabase-mcp` and `vercel-mcp` write ca
 - Deny: exit code 2, stderr message (English): what was blocked, which rule, the role, and the next step (worker: "commit your branch and hand over to the coordinator"; solo: "run it yourself outside Claude, or start the session with `OFFLIMITS_ROLE=coordinator` if you really mean it").
 - Ask: exit 0 with `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"…"}}`.
 - Allow: exit 0, no output.
-- Error (unparseable stdin, exception): coordinator → exit 0; worker → exit 2 "offlimits: hook error, blocking because a role is set"; solo → exit 0 and a log entry. `onError` overrides.
+- Error (unparseable stdin, exception): coordinator → exit 0; worker → exit 2 "offlimits: hook error, blocking because the role is worker"; solo → exit 0 and a log entry. `onError` overrides.
 - Log: `.offlimits/log.jsonl` at the repo root (parent of the git common dir, so worktrees share it); one line per deny/ask/error: `{at, role, tool, decision, rule, summary}`; capped at 200 lines.
 - `SessionStart` (matchers `startup|resume|clear|compact`): one banner line with role, protected branches, production definition state, count of blocks in the log, a warning if a worker sits on a protected branch, a warning if the log holds hook errors, and a pointer to `/offlimits`.
 

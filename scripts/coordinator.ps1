@@ -1,7 +1,17 @@
 param([switch]$DryRun)
 $ErrorActionPreference = 'Stop'
 
-$branch = (git rev-parse --abbrev-ref HEAD).Trim()
+$branch = $null
+try {
+  $branch = & git rev-parse --abbrev-ref HEAD 2>$null
+  if ($LASTEXITCODE) { $branch = $null }
+} catch {
+  $branch = $null
+}
+if (-not $branch) {
+  throw 'Not inside a git repository (or git is not installed). Run coordinator.ps1 from the repository you coordinate.'
+}
+$branch = "$branch".Trim()
 if ($branch -ne 'main') { Write-Warning "Coordinator should run on 'main' (current: $branch)." }
 
 $env:OFFLIMITS_ROLE = 'coordinator'

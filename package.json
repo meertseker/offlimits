@@ -6,6 +6,6 @@
   "scripts": {
     "test": "node --test",
     "validate": "claude plugin validate .",
-    "selftest": "node hooks/selftest.mjs"
+    "selftest": "node hooks/selftest.mjs --all"
   }
 }

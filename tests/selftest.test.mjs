@@ -10,8 +10,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const script = (name) => path.join(ROOT, 'hooks', name);
 const node = (args, opts = {}) => spawnSync(process.execPath, args, { encoding: 'utf8', ...opts });
 
-test('self-test --json passes every fixture through the real gate', () => {
-  const r = node([script('selftest.mjs'), '--json'], { cwd: ROOT });
+test('self-test --all --json passes every fixture through the real gate', () => {
+  const r = node([script('selftest.mjs'), '--all', '--json'], { cwd: ROOT });
   const results = JSON.parse(r.stdout);
   assert.ok(results.length >= 100);
   // every tests/fixtures/*.json file is loaded
@@ -25,11 +25,24 @@ test('self-test --json passes every fixture through the real gate', () => {
   assert.equal(r.status, 0, r.stderr);
 });
 
+test('self-test default run is a sample of about 60 cases covering every rule id', async () => {
+  const { RULE_IDS } = await import('../hooks/lib/rules.mjs');
+  const r = node([script('selftest.mjs'), '--json'], { cwd: ROOT });
+  assert.equal(r.status, 0, r.stderr);
+  const results = JSON.parse(r.stdout);
+  assert.ok(results.length >= 50 && results.length <= 70, `${results.length} cases`);
+  for (const id of RULE_IDS) assert.ok(results.some((x) => x.rule === id && x.expect !== 'allow'), `rule ${id} not sampled`);
+  assert.ok(results.some((x) => x.expect === 'deny'));
+  assert.ok(results.some((x) => x.expect === 'allow'));
+  const again = JSON.parse(node([script('selftest.mjs'), '--json'], { cwd: ROOT }).stdout);
+  assert.deepEqual(again.map((x) => x.name), results.map((x) => x.name), 'deterministic');
+});
+
 test('self-test table prints a summary line', () => {
   const r = node([script('selftest.mjs')], { cwd: ROOT });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /✓ blocked/);
-  assert.match(r.stdout, /\d+\/\d+ passed/);
+  assert.match(r.stdout, /\d+\/\d+ passed \(sample of \d+ cases; --all runs every case\)/);
 });
 
 function repo() {
@@ -43,6 +56,20 @@ test('explain prints a deny decision', () => {
   assert.equal(r.status, 0);
   assert.match(r.stdout, /^DECISION: deny \(git-push-protected\) - /);
   assert.ok(!r.stdout.includes('—'), 'no em dash');
+});
+
+test('explain takes the command as one single-quoted argument', () => {
+  const r = node([script('explain.mjs'), 'git push origin main'], { cwd: repo() });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^DECISION: deny \(git-push-protected\) - /);
+});
+
+test('explain reads the command from stdin when given no arguments', () => {
+  const r = node([script('explain.mjs')], { cwd: repo(), input: 'git push origin main\n' });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^DECISION: deny \(git-push-protected\) - /);
+  const empty = node([script('explain.mjs')], { cwd: repo(), input: '' });
+  assert.match(empty.stdout, /^DECISION: unknown - no command given/);
 });
 
 test('explain prints allow', () => {

@@ -10,7 +10,7 @@ An agent in Cursor, running on Claude Opus 4.6, deleted the production database 
 
 Sources: AI Incident Database report 7311 (incidentdatabase.ai); OECD AI incident 2026-04-27-6153 (oecd.ai).
 
-Would offlimits have caught it: partly. The destructive step was a Railway API or CLI call. If the agent went through the `railway` CLI, `railway up` is covered by `deploy`, but a volume or database deletion command is not in the built-in list. To cover it, add the command to `extraDeny` or list the API host under `production.hosts`. It was also a Cursor session, and offlimits is a Claude Code plugin: the same call from Claude Code would be gated, a Cursor session would not.
+Would offlimits have caught it: partly. The destructive step was a Railway API or CLI call. If the agent went through the `railway` CLI, `railway up` is covered by `deploy`, but a volume or database deletion command is not in the built-in list. To cover it, add the command to `extraDeny`, for example `{ "pattern": "^railway (volume|down|delete)", "reason": "Railway volume and service deletion goes through the coordinator." }`. (`production.hosts` would not help: it only feeds the `remote-db` rule for database clients, not HTTP or CLI calls.) It was also a Cursor session, and offlimits is a Claude Code plugin: the same call from Claude Code would be gated, a Cursor session would not.
 
 ## Terraform run deleted a production database, March 2026
 

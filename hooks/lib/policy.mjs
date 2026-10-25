@@ -150,3 +150,9 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
 
   return { policy, source: file, problems };
 }
+
+/** True when offlimits.json defines any production server, project ref or host. */
+export function productionConfigured(policy) {
+  const p = policy?.production ?? {};
+  return Boolean(p.mcpServers?.length || p.projectRefs?.length || p.hosts?.length);
+}
