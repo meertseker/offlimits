@@ -18,7 +18,7 @@ test('ci.yml runs the checks with plain node --test', () => {
   assert.ok(/node --test\s*$/m.test(ci), 'plain `node --test` step');
   assert.ok(!ci.includes('node --test tests/'), 'directory form fails on Windows');
   assert.ok(ci.includes('node hooks/selftest.mjs'));
-  assert.ok(ci.includes('claude plugin validate --strict .'));
+  assert.ok(ci.includes('claude plugin validate .'));
   assert.ok(ci.includes('@anthropic-ai/claude-code@2.1.310'));
   assert.ok(ci.includes('continue-on-error: true'));
 });
