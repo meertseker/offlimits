@@ -152,7 +152,20 @@ const mk11 = (extra = {}) => ({ ...mk('worker'), home: HOME, env: {}, ...extra }
 const bash = (command, c = mk11()) => decide({ tool_name: 'Bash', tool_input: { command } }, c);
 const ps = (command, c = mk11()) => decide({ tool_name: 'PowerShell', tool_input: { command } }, c);
 
-test('I19: protected paths resolve against the main worktree (commonRoot)', () => {
+test('I19 (POSIX): protected paths resolve against the main worktree (commonRoot)', { skip: process.platform === 'win32' }, () => {
+  const c = { ...mk11(), cwd: '/wt/feat-x', repoRoot: '/wt/feat-x', commonRoot: '/repo' };
+  for (const p of ['/repo/offlimits.json', '/repo/.claude/settings.json', '/repo/.github/workflows/ci.yml']) {
+    const d = decide({ tool_name: 'Write', tool_input: { file_path: p } }, c);
+    assert.equal(d.action, 'deny', p);
+    assert.equal(d.rule, 'protected-file');
+  }
+  assert.equal(decide({ tool_name: 'Write', tool_input: { file_path: '/wt/feat-x/offlimits.json' } }, c).action, 'deny');
+  assert.equal(decide({ tool_name: 'Write', tool_input: { file_path: '/repo/src/app.ts' } }, c).action, 'allow');
+  assert.equal(bash('rm /repo/offlimits.json', c).action, 'deny');
+  assert.equal(bash('echo x > /repo/.claude/settings.json', c).action, 'deny');
+});
+
+test('I19 (Windows): protected paths resolve against the main worktree (commonRoot)', { skip: process.platform !== 'win32' }, () => {
   const c = { ...mk11(), cwd: 'C:/wt/feat-x', repoRoot: 'C:/wt/feat-x', commonRoot: 'C:/repo' };
   for (const p of ['C:/repo/offlimits.json', 'C:\\repo\\.claude\\settings.json', '/c/repo/.github/workflows/ci.yml']) {
     const d = decide({ tool_name: 'Write', tool_input: { file_path: p } }, c);

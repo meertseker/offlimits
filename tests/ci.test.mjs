@@ -32,8 +32,8 @@ test('ci.yml is least-privilege', () => {
   assert.ok(ci.includes('contents: read'));
   assert.ok(!ci.includes('secrets.'));
   assert.ok(!ci.includes('pull_request_target'));
-  assert.ok(ci.includes('actions/checkout@v4'));
-  assert.ok(ci.includes('actions/setup-node@v4'));
+  assert.ok(ci.includes('actions/checkout@v5'));
+  assert.ok(ci.includes('actions/setup-node@v5'));
   assert.ok(ci.includes('cancel-in-progress: true'));
 });
 
