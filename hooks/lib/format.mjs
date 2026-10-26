@@ -41,7 +41,7 @@ export function askReason(d, opts = {}) {
 /** SessionStart context banner. */
 export function banner(f) {
   const lines = [
-    `offlimits active - role: ${f.role}; protected branches: ${f.protectedBranches.join(', ') || 'none'}; ` +
+    `offlimits active - role: ${f.role}${f.roleViaDefault ? ' (defaultRole)' : ''}; protected branches: ${f.protectedBranches.join(', ') || 'none'}; ` +
       (f.productionConfigured
         ? 'production definition found'
         : 'no production definition (MCP writes will ask instead of block)') +

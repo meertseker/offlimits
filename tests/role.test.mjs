@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRole } from '../hooks/lib/role.mjs';
+import { resolveRole, roleDetail } from '../hooks/lib/role.mjs';
 import { DEFAULT_POLICY } from '../hooks/lib/policy.mjs';
 
 const P = DEFAULT_POLICY;
@@ -21,3 +21,24 @@ const rows = [
 for (const [name, input, env, policy, want] of rows) {
   test(`role: ${name}`, () => assert.equal(resolveRole(input, env, policy), want));
 }
+
+const dw = { ...P, defaultRole: 'worker' };
+const drows = [
+  ['defaultRole worker, nothing set', {}, {}, dw, 'worker'],
+  ['defaultRole worker, unknown env value', {}, { OFFLIMITS_ROLE: 'boss' }, dw, 'worker'],
+  ['defaultRole worker, coordinator env wins', {}, { OFFLIMITS_ROLE: 'coordinator' }, dw, 'coordinator'],
+  ['defaultRole worker, coordinator env in untrusted subagent', { agent_id: 'a' }, { OFFLIMITS_ROLE: 'coordinator' }, dw, 'worker'],
+  ['defaultRole solo, nothing set', {}, {}, { ...P, defaultRole: 'solo' }, 'solo'],
+  ['defaultRole solo, subagent', { agent_id: 'a' }, {}, { ...P, defaultRole: 'solo' }, 'worker'],
+  ['defaultRole worker, null input', null, {}, dw, 'worker'],
+];
+for (const [name, input, env, policy, want] of drows) {
+  test(`role: ${name}`, () => assert.equal(resolveRole(input, env, policy), want));
+}
+
+test('roleDetail marks a role that came from defaultRole', () => {
+  assert.deepEqual(roleDetail({}, {}, dw), { role: 'worker', viaDefault: true });
+  assert.deepEqual(roleDetail({}, { OFFLIMITS_ROLE: 'worker' }, dw), { role: 'worker', viaDefault: false });
+  assert.deepEqual(roleDetail({ agent_id: 'a' }, {}, dw), { role: 'worker', viaDefault: false });
+  assert.deepEqual(roleDetail({}, {}, P), { role: 'solo', viaDefault: false });
+});

@@ -27,9 +27,27 @@ test('default values match the spec', () => {
 
 test('invalid JSON gives defaults and a problem', () => {
   const r = loadPolicy('/repo', reader('{nope'));
-  assert.deepEqual(r.policy, DEFAULT_POLICY);
+  assert.deepEqual(r.policy, { ...DEFAULT_POLICY, defaultRole: 'worker' });
   assert.equal(r.problems.length, 1);
-  assert.match(r.problems[0], /^offlimits\.json: invalid JSON \(.+\)$/);
+  assert.match(r.problems[0], /^offlimits\.json: invalid JSON \(.+\)/);
+});
+
+test('unparseable policy fails closed: defaultRole worker and a problem sentence', () => {
+  for (const text of ['{"defaultRole": "solo", "allow": [', '[]', '']) {
+    const r = loadPolicy('/repo', reader(text));
+    assert.equal(r.policy.defaultRole, 'worker', text);
+    assert.match(r.problems[0], /defaultRole falls back to worker until offlimits\.json is fixed/);
+  }
+});
+
+test('missing policy file keeps defaultRole solo', () => {
+  assert.equal(loadPolicy('/repo', missing).policy.defaultRole, 'solo');
+});
+
+test('BOM does not make a valid file unparseable', () => {
+  const r = loadPolicy('/repo', reader('﻿{}'));
+  assert.equal(r.policy.defaultRole, 'solo');
+  assert.deepEqual(r.problems, []);
 });
 
 test('unknown key is reported and ignored', () => {
@@ -95,3 +113,24 @@ test('leading BOM is stripped', () => {
   assert.deepEqual(r.problems, []);
   assert.deepEqual(r.policy.protectedBranches, ['rel']);
 });
+
+test('defaultRole defaults to solo', () => {
+  assert.equal(DEFAULT_POLICY.defaultRole, 'solo');
+  assert.equal(loadPolicy('/repo', reader('{}')).policy.defaultRole, 'solo');
+});
+
+for (const v of ['solo', 'worker']) {
+  test(`defaultRole accepts ${v}`, () => {
+    const r = loadPolicy('/repo', reader(JSON.stringify({ defaultRole: v })));
+    assert.equal(r.policy.defaultRole, v);
+    assert.deepEqual(r.problems, []);
+  });
+}
+
+for (const v of ['coordinator', 'boss', '', 1, null, ['worker']]) {
+  test(`defaultRole rejects ${JSON.stringify(v)}`, () => {
+    const r = loadPolicy('/repo', reader(JSON.stringify({ defaultRole: v })));
+    assert.equal(r.policy.defaultRole, 'solo');
+    assert.deepEqual(r.problems, ['offlimits.json: defaultRole must be "solo" or "worker"']);
+  });
+}

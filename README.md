@@ -75,8 +75,8 @@ The role comes only from the `OFFLIMITS_ROLE` environment variable that you set 
 | Role | How | What it can do |
 |---|---|---|
 | `coordinator` | `OFFLIMITS_ROLE=coordinator`, main session only | Everything. This is the one session that merges and deploys |
-| `worker` | `OFFLIMITS_ROLE=worker`, and any subagent (the hook input carries an `agent_id`) unless its `agent_type` is in `trustedAgentTypes` | Every rule above denies |
-| `solo` | variable not set, or set to anything other than `coordinator` or `worker` | Hard rules deny. `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp` and `vercel-mcp` writes ask; those MCP writes deny when the server or project is listed under `production` |
+| `worker` | `OFFLIMITS_ROLE=worker`, any subagent (the hook input carries an `agent_id`) unless its `agent_type` is in `trustedAgentTypes`, and a session whose variable is unset or unrecognised when `defaultRole` is `worker` | Every rule above denies |
+| `solo` | variable not set, or set to anything other than `coordinator` or `worker`, while `defaultRole` is `solo` (the default) | Hard rules deny. `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp` and `vercel-mcp` writes ask; those MCP writes deny when the server or project is listed under `production` |
 
 If the hook itself fails, `onError: "auto"` blocks only for workers (fail closed). Coordinator and solo sessions allow the call and log the error; the warning appears in the next session banner and in `/offlimits`, not at the moment of the call. Change this with `onError`.
 
@@ -119,6 +119,12 @@ No configuration is needed. To tune it, add `offlimits.json` to the repository r
   ],
   "allow": ["^git push origin feat/[\\w./-]+$"]
 }
+```
+
+In a team repository, set `defaultRole` so that every session not explicitly started as coordinator is a worker:
+
+```json
+{ "defaultRole": "worker" }
 ```
 
 Every key, type and default is in [docs/policy.md](docs/policy.md). Listing a server in `production.mcpServers`, or a project in `production.projectRefs`, turns MCP write asks into denies for solo users; `production.hosts` only affects `remote-db`. Blocks are logged to `.offlimits/log.jsonl`; run `/offlimits` to see the last ten, and `/offlimits explain <command>` to see what the gate would do with a command without running it.

@@ -10,6 +10,7 @@ import path from 'node:path';
  * @property {string[]} allow
  * @property {string[]} trustedAgentTypes
  * @property {string} roleEnv
+ * @property {'solo'|'worker'} defaultRole
  * @property {'auto'|'block'|'allow'} onError
  */
 
@@ -28,9 +29,11 @@ export const DEFAULT_POLICY = Object.freeze({
   allow: [],
   trustedAgentTypes: [],
   roleEnv: 'OFFLIMITS_ROLE',
+  defaultRole: 'solo',
   onError: 'auto',
 });
 
+const FAIL_CLOSED = 'defaultRole falls back to worker until offlimits.json is fixed';
 const ON_ERROR = ['auto', 'block', 'allow'];
 const PRODUCTION_KEYS = ['mcpServers', 'projectRefs', 'hosts'];
 
@@ -56,6 +59,7 @@ function cloneDefaults() {
     allow: [],
     trustedAgentTypes: [],
     roleEnv: DEFAULT_POLICY.roleEnv,
+    defaultRole: DEFAULT_POLICY.defaultRole,
     onError: DEFAULT_POLICY.onError,
   };
 }
@@ -83,11 +87,13 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
   try {
     data = JSON.parse(text);
   } catch (e) {
-    problems.push(`offlimits.json: invalid JSON (${e.message})`);
+    problems.push(`offlimits.json: invalid JSON (${e.message}). ${FAIL_CLOSED}`);
+    policy.defaultRole = 'worker';
     return { policy, source: file, problems };
   }
   if (!isObject(data)) {
-    problems.push('offlimits.json: invalid JSON (top level must be an object)');
+    problems.push(`offlimits.json: invalid JSON (top level must be an object). ${FAIL_CLOSED}`);
+    policy.defaultRole = 'worker';
     return { policy, source: file, problems };
   }
 
@@ -108,6 +114,10 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
       case 'roleEnv':
         if (typeof value === 'string' && value.trim()) policy.roleEnv = value.trim();
         else bad(key, 'a non-empty string');
+        break;
+      case 'defaultRole':
+        if (value === 'solo' || value === 'worker') policy.defaultRole = value;
+        else problems.push('offlimits.json: defaultRole must be "solo" or "worker"');
         break;
       case 'onError':
         if (ON_ERROR.includes(value)) policy.onError = value;

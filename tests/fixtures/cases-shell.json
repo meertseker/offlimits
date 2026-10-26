@@ -1,4 +1,8 @@
 [
+  {"name":"[defaultRole] worker default denies push to main with no env","tool_name":"Bash","tool_input":{"command":"git push origin main"},"role":"solo","expect":"deny","rule":"git-push-protected","policy":{"defaultRole":"worker"}},
+  {"name":"[defaultRole] worker default allows npm test","tool_name":"Bash","tool_input":{"command":"npm test"},"role":"solo","expect":"allow","policy":{"defaultRole":"worker"}},
+  {"name":"[defaultRole] coordinator env beats worker default","tool_name":"Bash","tool_input":{"command":"git push origin main"},"role":"coordinator","expect":"allow","policy":{"defaultRole":"worker"}},
+  {"name":"[defaultRole] invalid coordinator default falls back to solo","tool_name":"Bash","tool_input":{"command":"npm test"},"role":"solo","expect":"allow","policy":{"defaultRole":"coordinator"}},
   {"name":"[C1] git checkout main && git push","tool_name":"Bash","tool_input":{"command":"git checkout main && git push"},"role":"solo","expect":"deny","rule":"git-push-protected"},
   {"name":"[C1] git switch main && git merge feat/x && git push","tool_name":"Bash","tool_input":{"command":"git switch main && git merge feat/x && git push"},"role":"solo","expect":"deny","rule":"git-push-protected"},
   {"name":"[C1] git checkout -B main && git push","tool_name":"Bash","tool_input":{"command":"git checkout -B main && git push"},"role":"solo","expect":"deny","rule":"git-push-protected"},

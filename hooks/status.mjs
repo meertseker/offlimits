@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Prints gate status for the current directory. Always exits 0.
 import { loadPolicy, productionConfigured } from './lib/policy.mjs';
-import { resolveRole } from './lib/role.mjs';
+import { roleDetail } from './lib/role.mjs';
 import { repoRoot, commonRoot, currentBranch } from './lib/git.mjs';
 import { readLog } from './lib/log.mjs';
 import { RULE_IDS } from './lib/rules.mjs';
@@ -10,11 +10,11 @@ try {
   const cwd = process.cwd();
   const root = repoRoot(cwd);
   const { policy, source, problems } = loadPolicy(root ?? cwd);
-  const role = resolveRole(null, process.env, policy);
+  const { role, viaDefault } = roleDetail(null, process.env, policy);
   const p = policy.production;
   const configured = productionConfigured(policy);
   const out = [
-    `role: ${role}`,
+    `role: ${role}${viaDefault ? ' (defaultRole)' : ''}`,
     `policy source: ${source}`,
     problems.length ? 'policy problems:' : 'policy problems: none',
     ...problems.map((x) => `  - ${x}`),

@@ -76,11 +76,12 @@ Solo mode with no `production` section: `supabase-mcp` and `vercel-mcp` write ca
   "allow": ["regex over a command segment; matching segments skip the rules"],
   "trustedAgentTypes": [],
   "roleEnv": "OFFLIMITS_ROLE",
+  "defaultRole": "solo",
   "onError": "auto"
 }
 ```
 
-`production.hosts` adds hostnames to the `remote-db` rule. `onError`: `auto` (block only for workers; coordinator and solo allow and log), `block`, `allow`. Invalid JSON or unknown keys: the hook uses defaults, logs the problem and the session banner warns.
+`defaultRole` (`solo` or `worker`, default `solo`) is the role of a session whose role variable is unset or unrecognised and that is not a subagent; `coordinator` is refused (problem, fallback `solo`) because a default coordinator would lift the gate for everyone. If `offlimits.json` exists but is not valid JSON, `defaultRole` falls back to `worker` (fail closed) until it is fixed; a missing file keeps `solo`. `production.hosts` adds hostnames to the `remote-db` rule. `onError`: `auto` (block only for workers; coordinator and solo allow and log), `block`, `allow`. Invalid JSON or unknown keys: the hook uses defaults, logs the problem and the session banner warns.
 
 ### Hook contract
 

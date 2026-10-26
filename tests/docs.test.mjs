@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const RULES = ['git-push-protected', 'git-branch-protected', 'gh-write', 'supabase-remote', 'remote-db', 'db-migrate', 'deploy', 'publish', 'role-spoof', 'protected-file', 'opaque-shell', 'supabase-mcp', 'vercel-mcp', 'mcp-write', 'extra-deny', 'github-mcp', 'mcp-destructive', 'agent-spawn', 'git-clean'];
-const KEYS = ['protectedBranches', 'protectedPaths', 'production', 'mcpServers', 'projectRefs', 'hosts', 'extraDeny', 'allow', 'trustedAgentTypes', 'roleEnv', 'onError'];
+const KEYS = ['protectedBranches', 'protectedPaths', 'production', 'mcpServers', 'projectRefs', 'hosts', 'extraDeny', 'allow', 'trustedAgentTypes', 'roleEnv', 'defaultRole', 'onError'];
 const outsideCode = (s) => s.replace(/```[\s\S]*?```/g, '');
 
 test('README has enough prose, the install command and a Limits section', () => {

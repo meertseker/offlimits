@@ -55,3 +55,27 @@ test('log with errors is reported', () => {
   );
   assert.match(run(dir).stdout, /hook errors/);
 });
+
+test('banner says why the role is worker when it comes from defaultRole', () => {
+  const dir = tmpRepo('feat/x');
+  fs.writeFileSync(path.join(dir, 'offlimits.json'), JSON.stringify({ defaultRole: 'worker' }));
+  const r = run(dir);
+  assert.match(r.stdout, /role: worker \(defaultRole\)/);
+});
+
+test('banner shows a plain worker role for the env variable', () => {
+  const dir = tmpRepo('feat/x');
+  fs.writeFileSync(path.join(dir, 'offlimits.json'), JSON.stringify({ defaultRole: 'worker' }));
+  const r = run(dir, 'worker');
+  assert.match(r.stdout, /role: worker;/);
+  assert.doesNotMatch(r.stdout, /defaultRole/);
+});
+
+test('banner warns when an unreadable policy forces worker', () => {
+  const dir = tmpRepo('feat/x');
+  fs.writeFileSync(path.join(dir, 'offlimits.json'), '{"defaultRole":');
+  const r = run(dir);
+  assert.match(r.stdout, /role: worker \(defaultRole\)/);
+  assert.match(r.stdout, /WARNING: offlimits\.json: invalid JSON/);
+  assert.match(r.stdout, /defaultRole falls back to worker until offlimits\.json is fixed/);
+});

@@ -43,3 +43,32 @@ test('every rule id the MCP and file rules can return is listed', () => {
     assert.ok(printed.includes(id), `missing ${id}`);
   }
 });
+
+test('status says role: worker (defaultRole) when the policy sets it', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-status-dr-')));
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'feat/x'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'offlimits.json'), JSON.stringify({ defaultRole: 'worker' }));
+    const env = { ...process.env };
+    delete env.OFFLIMITS_ROLE;
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'hooks', 'status.mjs')], { cwd: dir, env, encoding: 'utf8', timeout: 10000 });
+    assert.match(r.stdout, /^role: worker \(defaultRole\)$/m);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('status shows the unreadable-policy fallback', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-status-bad-')));
+  try {
+    execFileSync('git', ['init', '-q', '-b', 'feat/x'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'offlimits.json'), '{"a":');
+    const env = { ...process.env };
+    delete env.OFFLIMITS_ROLE;
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'hooks', 'status.mjs')], { cwd: dir, env, encoding: 'utf8', timeout: 10000 });
+    assert.match(r.stdout, /^role: worker \(defaultRole\)$/m);
+    assert.match(r.stdout, /defaultRole falls back to worker until offlimits\.json is fixed/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

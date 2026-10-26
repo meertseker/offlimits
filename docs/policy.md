@@ -1,6 +1,6 @@
 # Policy reference
 
-offlimits works with no configuration. To change it, create `offlimits.json` in the repository root. Every key is optional. Unknown keys, wrong types and invalid regular expressions do not stop the hook: the bad entry is ignored, the rest of the file is used, the problem is logged, and the session banner prints a warning.
+offlimits works with no configuration. To change it, create `offlimits.json` in the repository root. Every key is optional. Unknown keys, wrong types and invalid regular expressions do not stop the hook: the bad entry is ignored, the rest of the file is used, the problem is logged, and the session banner prints a warning. One exception fails closed: if `offlimits.json` exists but cannot be parsed at all (invalid JSON), the whole file is ignored and `defaultRole` becomes `worker` until you fix it, so a typo cannot turn a team repository into solo mode. A missing file keeps `solo`.
 
 A copy with every key set is in [`offlimits.example.json`](../offlimits.example.json).
 
@@ -104,7 +104,26 @@ Subagents of a coordinator session are workers by default. A subagent whose `age
 - Type: non-empty string
 - Default: `"OFFLIMITS_ROLE"`
 
-Name of the environment variable that carries the role. Only two values are recognised: `coordinator` (trimmed, case-insensitive) and `worker`. Any other value counts as unset, which means solo. Any subagent (the hook input carries an `agent_id`) is a worker, unless its `agent_type` is in `trustedAgentTypes`. The `role-spoof` rule watches whatever name you set here.
+Name of the environment variable that carries the role. Only two values are recognised: `coordinator` (trimmed, case-insensitive) and `worker`. Any other value counts as unset, which means `defaultRole` (solo by default). Any subagent (the hook input carries an `agent_id`) is a worker, unless its `agent_type` is in `trustedAgentTypes`. The `role-spoof` rule watches whatever name you set here.
+
+### `defaultRole`
+
+- Type: `"solo"` or `"worker"`
+- Default: `"solo"`
+
+The role of a session when the role variable (`roleEnv`) is unset or holds an unrecognised value and the call does not come from a subagent. `solo` is the normal single-user behaviour. `worker` makes every session a worker unless the human explicitly starts it with `OFFLIMITS_ROLE=coordinator`, so a forgotten variable never downgrades MCP writes from deny to ask. The session banner and `/offlimits` print `role: worker (defaultRole)` when the role comes from this key.
+
+`"coordinator"` is refused on purpose: a default coordinator would disable the gate for everyone. Any value other than `solo` or `worker` is reported as the policy problem `offlimits.json: defaultRole must be "solo" or "worker"`, and the hook falls back to `solo`.
+
+The one fail-closed case: when `offlimits.json` exists but is not valid JSON, `defaultRole` is `worker` (problem text: `offlimits.json: invalid JSON (...). defaultRole falls back to worker until offlimits.json is fixed`). The banner and `/offlimits` show `role: worker (defaultRole)` plus the warning. A missing file keeps `solo`.
+
+Team repository example:
+
+```json
+{ "defaultRole": "worker" }
+```
+
+Order of resolution: the role variable `coordinator` (outside a subagent) gives coordinator; `worker` gives worker; any untrusted subagent is a worker; otherwise `defaultRole`. A hook error for a `defaultRole` worker fails closed exactly like an env worker.
 
 ### `onError`
 
@@ -118,8 +137,8 @@ What the hook does when it crashes or cannot parse its input. `auto` blocks when
 | Role | Set by | Hard rules | `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp`, `vercel-mcp` writes (production not matching) |
 |---|---|---|---|
 | `coordinator` | `OFFLIMITS_ROLE=coordinator` in the environment, main session only | allowed | allowed |
-| `worker` | `OFFLIMITS_ROLE=worker`, or any subagent (unless in `trustedAgentTypes`) | deny | deny |
-| `solo` | variable not set, or any other value | deny | ask |
+| `worker` | `OFFLIMITS_ROLE=worker`, any subagent (unless in `trustedAgentTypes`), or variable unset or unrecognised while `defaultRole` is `worker` | deny | deny |
+| `solo` | variable not set, or any other value, while `defaultRole` is `solo` (the default) | deny | ask |
 
 The hard rules are `git-push-protected`, `git-branch-protected`, `gh-write`, `supabase-remote`, `remote-db`, `deploy`, `publish`, `role-spoof`, `protected-file`, `github-mcp`, `extra-deny` and `mcp-write`. Solo mode denies `supabase-mcp` and `vercel-mcp` writes too when the server is in `production.mcpServers` or the call names a project in `production.projectRefs`.
 

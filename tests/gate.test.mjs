@@ -134,3 +134,50 @@ test('worker hook error says the role is worker; solo error allows and logs', ()
   assert.equal(s.status, 0);
   assert.equal(s.stderr, '');
 });
+
+test('defaultRole worker: push to main is denied with no env', () => {
+  const dir = tmpRepo({ defaultRole: 'worker' });
+  const r = run(dir, bash('git push origin main'));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /role: worker/);
+  assert.equal(logLines(dir)[0].role, 'worker');
+});
+
+test('defaultRole worker: supabase insert is denied, not asked', () => {
+  const dir = tmpRepo({ defaultRole: 'worker' });
+  const r = run(dir, { tool_name: 'mcp__supabase__execute_sql', tool_input: { query: 'insert into t values (1)' } });
+  assert.equal(r.status, 2);
+  assert.equal(r.stdout, '');
+});
+
+test('defaultRole worker: coordinator env still lifts the gate', () => {
+  const r = run(tmpRepo({ defaultRole: 'worker' }), bash('git push origin main'), 'coordinator');
+  assert.equal(r.status, 0);
+});
+
+test('defaultRole worker: hook error fails closed', () => {
+  const r = run(tmpRepo({ defaultRole: 'worker' }), '{not json');
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /role is worker/);
+});
+
+test('defaultRole solo: hook error still passes', () => {
+  assert.equal(run(tmpRepo({ defaultRole: 'solo' }), '{not json').status, 0);
+});
+
+function tmpRepoRaw(text) {
+  const dir = tmpRepo();
+  fs.writeFileSync(path.join(dir, 'offlimits.json'), text);
+  return dir;
+}
+
+test('truncated offlimits.json: supabase insert is denied with no env', () => {
+  const dir = tmpRepoRaw('{"defaultRole": "solo", "production": {');
+  const r = run(dir, { tool_name: 'mcp__supabase__execute_sql', tool_input: { query: 'insert into t values (1)' } });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /role: worker/);
+});
+
+test('truncated offlimits.json: unparseable stdin fails closed', () => {
+  assert.equal(run(tmpRepoRaw('{"x":'), '{not json').status, 2);
+});

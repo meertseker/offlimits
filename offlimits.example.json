@@ -18,5 +18,6 @@
   "allow": ["^git push origin feat/[\\w./-]+$", "^vercel env (ls|pull)( |$)"],
   "trustedAgentTypes": [],
   "roleEnv": "OFFLIMITS_ROLE",
+  "defaultRole": "solo",
   "onError": "auto"
 }

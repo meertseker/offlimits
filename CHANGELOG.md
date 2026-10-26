@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 - 2026-10-26
+
+Added:
+
+- `defaultRole` policy key (`solo` or `worker`): the role of a session whose role variable is unset or unrecognised. `coordinator` is refused.
+- An `offlimits.json` that exists but cannot be parsed sets `defaultRole` to `worker` until it is fixed (fail closed); the banner and `/offlimits` warn.
+
 ## 0.1.0 - 2026-10-26
 
 First release.

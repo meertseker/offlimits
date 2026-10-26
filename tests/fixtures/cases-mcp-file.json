@@ -1,4 +1,6 @@
 [
+  {"name":"[defaultRole] worker default denies supabase insert","tool_name":"mcp__supabase__execute_sql","tool_input":{"query":"insert into t values (1)"},"role":"solo","expect":"deny","rule":"supabase-mcp","policy":{"defaultRole":"worker"}},
+  {"name":"[defaultRole] solo default still asks on supabase insert","tool_name":"mcp__supabase__execute_sql","tool_input":{"query":"insert into t values (1)"},"role":"solo","expect":"ask","rule":"supabase-mcp","policy":{"defaultRole":"solo"}},
   {"name":"C4 github merge_pull_request (solo)","tool_name":"mcp__github__merge_pull_request","tool_input":{"owner":"a","repo":"b","pull_number":7},"role":"solo","expect":"deny","rule":"github-mcp"},
   {"name":"C4 github merge_pull_request (worker)","tool_name":"mcp__github__merge_pull_request","tool_input":{"owner":"a","repo":"b","pull_number":7},"role":"worker","expect":"deny","rule":"github-mcp"},
   {"name":"C4 github push_files to main","tool_name":"mcp__github__push_files","tool_input":{"owner":"a","repo":"b","branch":"main","files":[],"message":"x"},"role":"solo","expect":"deny","rule":"github-mcp"},
