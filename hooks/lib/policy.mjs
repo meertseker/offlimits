@@ -153,6 +153,8 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
           }
         }
         break;
+      case 'team':
+        break; // validated by loadTeam (hooks/lib/team/config.mjs), never by the gate
       default:
         problems.push(`offlimits.json: unknown key "${key}"`);
     }
