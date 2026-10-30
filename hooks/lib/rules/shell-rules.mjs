@@ -912,7 +912,9 @@ function teamLaunch(c) {
   if (!worker && hit === 'init') return null;
   return {
     action: worker ? 'deny' : 'ask',
-    reason: `${name} ${hit} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
+    reason: hit === 'init'
+      ? `${name} init rewrites team configuration; re-run it from a terminal with: team init ${shown(c)}.`
+      : `${name} ${hit} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
   };
 }
 

@@ -67,11 +67,13 @@ Inside Claude Code the launcher reads `CLAUDECODE` and the session's role. A sub
 
 | Command | Human terminal | Coordinator | Worker (or subagent) | Solo inside Claude |
 |---|---|---|---|---|
-| `init` | yes | yes | no | yes |
+| `init` | yes | yes | no (the gate says: re-run it from a terminal with `team init`) | yes |
 | `coordinator`, `worker`, `done` | yes | yes | no | no (the gate asks) |
 | `board`, `reserve` | yes | yes | yes | yes |
 | `ask` | yes | yes | yes (own lane) | no (needs a lane) |
 | `stage`, `deliver` | yes | yes | yes (own lane) | no (needs a lane) |
+
+After the first `init`, `defaultRole: worker` makes your own plain `claude` session in the repository a worker, so `/offlimits init` there is denied the second time with "init rewrites team configuration; re-run it from a terminal with: team init". Do exactly that.
 
 `stage`, `deliver` and `ask` all need a lane: `OFFLIMITS_LANE` (set for workers), or `--lane` from the coordinator or a human terminal (`ask` takes the lane the same way). Solo sessions have none.
 

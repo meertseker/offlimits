@@ -20,7 +20,7 @@ When the plugin is installed in Claude Code, use `${CLAUDE_PLUGIN_ROOT}` as `<ro
 
 Team mode (see the `offlimits-coordinator` and `offlimits-worker` skills):
 
-- `/offlimits init`: run `node "<root>/bin/team.mjs" init`. Turns the repo into a team repo: writes or merges `offlimits.json`, the managed CLAUDE.md block, the PR template, the `.gitignore` entry and `.offlimits/team/`. Safe to re-run. Show the shell function line it prints and say the human may add it to their shell profile; do not edit the profile.
+- `/offlimits init`: run `node "<root>/bin/team.mjs" init`. Turns the repo into a team repo: writes or merges `offlimits.json`, the managed CLAUDE.md block, the PR template, the `.gitignore` entry and `.offlimits/team/`. Safe to re-run. Show the shell function line it prints and say the human may add it to their shell profile; do not edit the profile. If the gate denies it (after the first `init` this session is a worker by `defaultRole`), tell the human to run `team init` from a terminal.
 - `/offlimits board`: run `node "<root>/bin/team.mjs" board`. Shows every lane: stage, branch, ahead/behind, dirty, last commit, delivery, questions.
 - `/offlimits team <args>`: run `node "<root>/bin/team.mjs" <args>`, passing each argument as its own quoted word. Without arguments it prints the team usage. Commands that start sessions or remove lanes (`coordinator`, `worker`, `done`) are for the coordinator or a human terminal; if the gate refuses, report that and stop.
 
