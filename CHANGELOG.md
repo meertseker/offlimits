@@ -4,9 +4,13 @@
 
 Repositioned: offlimits now turns Claude Code into a software team (one coordinator, workers in their own worktrees) and keeps the gate that holds it together.
 
+Breaking:
+
+- `scripts/worker.ps1` and `scripts/coordinator.ps1` are removed: they started sessions under names the `team-launch` rule did not know. Use `team worker <lane> --brief <file>` and `team coordinator` (or `node bin/team.mjs ...`).
+
 Added:
 
-- Team mode: `bin/team.mjs` (also `offlimits-team`, `scripts/coordinator.ps1`, `scripts/worker.ps1`) with `init`, `coordinator`, `worker`, `board`, `stage`, `deliver`, `ask`, `reserve` and `done`, and exit codes 0 to 4.
+- Team mode: `bin/team.mjs` (also `offlimits-team`, or `team` once the shell function from `init` is in your profile) with `init`, `coordinator`, `worker`, `board`, `stage`, `deliver`, `ask`, `reserve` and `done`, and exit codes 0 to 4.
 - `init` writes `offlimits.json` (`defaultRole: worker`, a `team` block), a managed block in `CLAUDE.md`, a PR template and a `.gitignore` entry, and prints a `team` shell function. Safe to re-run.
 - The `team` block in `offlimits.json`: `language`, `models`, `maxWorkers`, `base`, `worktreeDir`, `checks`, `deploy`, `rules`, `reservations`, `terminal`, validated without ever weakening the gate.
 - Team state in `.offlimits/team/` (board, coordinator lock, reservations, briefs, deliveries, questions) under a file lock with timestamped tokens and a breaker lock.
