@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LANE_RE, resolveBase, lanePath, addLane, laneStatus, removeLane } from '../hooks/lib/team/lanes.mjs';
+import { pruneLane, LANE_RE, resolveBase, lanePath, addLane, laneStatus, removeLane } from '../hooks/lib/team/lanes.mjs';
 import { TEAM_DEFAULTS } from '../hooks/lib/team/config.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -197,4 +197,16 @@ test('addLane fetches origin with GIT_TERMINAL_PROMPT=0', () => {
   addLane('/tmp/repo', team, 'demo', { base: 'main' }, exec);
   const fetch = calls.find((c) => c.args[0] === 'fetch');
   assert.equal(fetch.env.GIT_TERMINAL_PROMPT, '0');
+});
+
+test('pruneLane drops a hand-deleted worktree and its branch', () => {
+  const f = fixture();
+  try {
+    const made = addLane(f.root, team, 'gone', { base: 'main' });
+    fs.rmSync(made.worktree, { recursive: true, force: true });
+    pruneLane(f.root, { branch: made.branch, worktree: made.worktree });
+    assert.equal(git(f.root, 'branch', '--list', made.branch), '');
+    assert.ok(!git(f.root, 'worktree', 'list').includes('repo-gone'));
+    pruneLane(f.root, { branch: made.branch, worktree: made.worktree }); // idempotent
+  } finally { f.cleanup(); }
 });

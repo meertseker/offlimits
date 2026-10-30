@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { sessionCommand, launchSpec, openTerminal, hasBin } from '../hooks/lib/team/terminal.mjs';
+import { sessionCommand, launchSpec, openTerminal, hasBin, claudeInvocation } from '../hooks/lib/team/terminal.mjs';
 
 const base = { role: 'worker', lane: 'demo', model: 'sonnet', name: 'demo', prompt: 'You are worker demo. Read C:\\x\\brief.md and follow it.' };
 
@@ -153,4 +153,30 @@ test('openTerminal attaches error handler', () => {
   process.stderr.write = (s) => { out += s; return true; };
   try { handler(new Error('boom')); } finally { process.stderr.write = w; }
   assert.match(out, /boom/);
+});
+
+test('sessionCommand honours a configured roleEnv and rejects a bad name', () => {
+  assert.ok(sessionCommand({ shell: 'sh', role: 'worker', lane: 'd1', model: 'sonnet', name: 'd1', prompt: 'hi', roleEnv: 'MY_ROLE' }).startsWith('MY_ROLE=worker '));
+  assert.throws(() => sessionCommand({ shell: 'sh', role: 'worker', model: 'sonnet', name: 'd1', prompt: 'hi', roleEnv: 'A;B' }), /unsafe value/);
+});
+
+test('claudeInvocation: non-windows runs claude directly', () => {
+  assert.deepEqual(claudeInvocation(['--model', 'opus'], { platform: 'linux' }), { file: 'claude', args: ['--model', 'opus'], options: {} });
+});
+
+test('claudeInvocation: windows prefers .exe, wraps .cmd via cmd.exe, validates args', () => {
+  const args = ['--model', 'opus', '-n', 'coordinator', '--continue'];
+  const shim = String.raw`C:\n\claude.cmd`;
+  const exePath = String.raw`C:\b\claude.exe`;
+  const exe = claudeInvocation(args, { platform: 'win32', where: () => [shim, exePath] });
+  assert.equal(exe.file, exePath);
+  assert.deepEqual(exe.args, args);
+  const cmd = claudeInvocation(args, { platform: 'win32', where: () => [shim] });
+  assert.equal(cmd.file, 'cmd.exe');
+  assert.deepEqual(cmd.args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.equal(cmd.args[3], `""${shim}" --model opus -n coordinator --continue"`);
+  assert.equal(cmd.options.windowsVerbatimArguments, true);
+  assert.throws(() => claudeInvocation(['--model', 'a&b'], { platform: 'win32', where: () => [shim] }), /unsafe value/);
+  assert.throws(() => claudeInvocation(args, { platform: 'win32', where: () => [] }), /claude not found on PATH/);
+  assert.throws(() => claudeInvocation(args, { platform: 'win32', where: () => [String.raw`C:\a&b\claude.cmd`] }), /unsafe value/);
 });

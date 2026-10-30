@@ -105,3 +105,12 @@ export function removeLane(mainRoot, lane, { force } = {}, exec = execFileSync) 
   git(mainRoot, ['worktree', 'remove', ...(force ? ['--force'] : []), '--', lane.worktree], exec);
   git(mainRoot, ['branch', force ? '-D' : '-d', '--', lane.branch], exec);
 }
+
+/** Lane whose worktree folder was deleted by hand: prune git's record, then delete the branch if it still exists. */
+export function pruneLane(mainRoot, lane, exec = execFileSync) {
+  assertLane(mainRoot, lane);
+  git(mainRoot, ['worktree', 'prune'], exec);
+  if (ok(mainRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${lane.branch}`], exec)) {
+    git(mainRoot, ['branch', '-D', '--', lane.branch], exec);
+  }
+}

@@ -8,15 +8,16 @@ import { loadPolicy } from '../policy.mjs';
 import { loadTeam } from './config.mjs';
 import { guard } from './guard.mjs';
 import { runInit } from './init.mjs';
-import { LANE_RE, addLane, assertLane, laneStatus, removeLane, resolveBase } from './lanes.mjs';
-import { STAGES, ensureTeamDir, readBoard, reserve, teamDir, updateLane } from './state.mjs';
-import { hasBin, launchSpec, openTerminal, sessionCommand } from './terminal.mjs';
+import { LANE_RE, addLane, assertLane, lanePath, laneStatus, pruneLane, removeLane, resolveBase } from './lanes.mjs';
+import { STAGES, ensureTeamDir, readBoard, reserve, teamDir, updateLane, withLock, writeBoard } from './state.mjs';
+import { claudeInvocation, hasBin, launchSpec, openTerminal, sessionCommand } from './terminal.mjs';
 
 const BIN = fileURLToPath(new URL('../../../bin/team.mjs', import.meta.url));
 const VALUE_FLAGS = ['brief', 'model', 'base', 'lane', 'note', 'file', 'language'];
 const BOOL_FLAGS = ['night', 'print', 'resume', 'takeover', 'json', 'abandon', 'yes'];
 const COMMANDS = ['init', 'coordinator', 'worker', 'board', 'stage', 'deliver', 'ask', 'reserve', 'done'];
 const ID = /^[A-Za-z0-9][\w.-]*$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const USAGE = `offlimits team <command>
 
@@ -57,8 +58,8 @@ function parseArgs(argv) {
 }
 
 function defaultSpawnSession(file, args, { cwd, env }) {
-  // On Windows `claude` is usually a .cmd shim, which needs a shell; every arg is validated (ID) first.
-  const r = spawnSync(file, args, { cwd, env, stdio: 'inherit', shell: process.platform === 'win32' });
+  const inv = claudeInvocation(args);
+  const r = spawnSync(inv.file, inv.args, { ...inv.options, cwd, env, stdio: 'inherit' });
   if (r.error) throw r.error;
   return r.status ?? 1;
 }
@@ -80,7 +81,7 @@ const isLive = (l) => Boolean(l) && l.stage !== 'merged' && l.stage !== 'abandon
 
 /** Strip the OFFLIMITS_* assignments so nothing an agent could copy is printed. */
 function stripEnv(cmd) {
-  return cmd.replace(/^(?:\$env:[A-Z_]+='[^']*'; )+/, '').replace(/^(?:[A-Z_]+=\S+ )+/, '');
+  return cmd.replace(/^(?:\$env:\w+='[^']*'; )+/, '').replace(/^(?:\w+=\S+ )+/, '');
 }
 
 function ageText(s) {
@@ -142,7 +143,7 @@ export async function main(argv, deps = {}) {
     if (cmd !== 'init') for (const p of problems) err(`offlimits team: ${p}${fatal ? '' : ' (using default)'}`);
     if (fatal && (cmd === 'worker' || cmd === 'coordinator')) throw new Exit(2, 'offlimits team: fix offlimits.json before starting sessions');
 
-    const ctx = { flags, pos, mainRoot, team, dir: teamDir(cwd), role };
+    const ctx = { flags, pos, mainRoot, team, dir: teamDir(cwd), role, roleEnv: policy.roleEnv };
     switch (cmd) {
       case 'init': return cmdInit(ctx);
       case 'coordinator': return cmdCoordinator(ctx);
@@ -174,53 +175,66 @@ export async function main(argv, deps = {}) {
     return 0;
   }
 
-  function cmdWorker({ flags, pos, mainRoot, team, dir }) {
+  function cmdWorker({ flags, pos, mainRoot, team, dir, roleEnv }) {
     const lane = pos[0];
     if (!lane || !LANE_RE.test(lane)) throw new Exit(2, `offlimits team: lane name must match ${LANE_RE}`);
     if (!flags.brief) throw new Exit(2, 'offlimits team: worker needs --brief <file>');
-    ensureTeamDir(dir);
-    const lanes = readBoard(dir).lanes;
-    if (isLive(lanes[lane])) throw new Exit(2, `offlimits team: lane "${lane}" is already live`);
-    if (Object.values(lanes).filter(isLive).length >= team.maxWorkers) {
-      throw new Exit(2, `offlimits team: maxWorkers (${team.maxWorkers}) reached; finish or remove a lane first`);
-    }
     let brief;
     try { brief = fs.readFileSync(path.resolve(cwd, flags.brief), 'utf8'); } catch (e) {
       throw new Exit(2, `offlimits team: cannot read brief ${flags.brief} (${e.code || e.message})`);
     }
+    // Validate everything a terminal command needs before git or the board change.
     const model = flags.model || team.models.worker;
-    const made = addLane(mainRoot, team, lane, { base: flags.base || resolveBase(mainRoot, team.base) });
+    if (!ID.test(model)) throw new Exit(1, `offlimits team: ${flags.model ? '--model' : 'team.models.worker'} must match ${ID.source} (got "${model}")`);
+    if (!ENV_NAME.test(roleEnv)) throw new Exit(1, `offlimits team: offlimits.json roleEnv must match ${ENV_NAME.source}`);
+    const worktree = lanePath(mainRoot, team, lane);
     const briefPath = path.join(dir, 'briefs', `${lane}.md`);
-    fs.writeFileSync(briefPath, (flags.night ? 'mode: night\n\n' : '') + brief);
-    updateLane(dir, lane, { stage: 'briefed', model, branch: made.branch, worktree: made.worktree, base: made.base, brief: briefPath });
-
-    const hint = `cd "${made.worktree}"`;
+    const hint = `cd "${worktree}"`;
     let command;
     let spec = null;
     try {
       command = sessionCommand({
-        shell: platform === 'win32' ? 'pwsh' : 'sh', role: 'worker', lane, model, name: lane,
+        shell: platform === 'win32' ? 'pwsh' : 'sh', role: 'worker', lane, model, name: lane, roleEnv,
         prompt: `You are worker ${lane}. Read ${briefPath} and follow it.`,
       });
-      spec = launchSpec({ platform, dir: made.worktree, title: lane, command, has });
+      spec = launchSpec({ platform, dir: worktree, title: lane, command, has });
     } catch (e) {
       if (!e || e.message !== 'unsafe value') throw e;
-      err(`offlimits team: cannot build a safe terminal command (${e.message}); run it yourself:`);
-      err(hint);
-      throw new Exit(1);
+      throw new Exit(1, `offlimits team: the brief path contains characters a terminal command cannot carry safely: ${briefPath}; move the repo to a path without ~ + & ' or similar characters`);
     }
+
+    const made = withLock(dir, () => {
+      ensureTeamDir(dir);
+      const board = readBoard(dir);
+      if (isLive(board.lanes[lane])) throw new Exit(2, `offlimits team: lane "${lane}" is already live`);
+      if (Object.values(board.lanes).filter(isLive).length >= team.maxWorkers) {
+        throw new Exit(2, `offlimits team: maxWorkers (${team.maxWorkers}) reached; finish or remove a lane first`);
+      }
+      const m = addLane(mainRoot, team, lane, { base: flags.base || resolveBase(mainRoot, team.base) });
+      let startSha = null;
+      try {
+        startSha = execFileSync('git', ['rev-parse', m.branch], { cwd: mainRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
+      } catch { /* recorded as null */ }
+      fs.writeFileSync(briefPath, (flags.night ? 'mode: night\n\n' : '') + brief);
+      const at = stamp();
+      board.lanes[lane] = { stage: 'briefed', model, branch: m.branch, worktree: m.worktree, base: m.base, startSha, brief: briefPath, createdAt: at, updatedAt: at };
+      writeBoard(dir, board);
+      return m;
+    });
     out(`lane ${lane}: ${made.branch} in ${made.worktree} (stage briefed, model ${model})`);
     if (flags.print || team.terminal === 'none' || !spec) {
       out(hint);
       out(env.CLAUDECODE ? `${stripEnv(command)}  (role is set by the launcher)` : command);
       return 0;
     }
-    open(spec);
+    const clean = { ...env };
+    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID']) delete clean[k];
+    open(spec, undefined, clean);
     out(`opened a terminal for ${lane}`);
     return 0;
   }
 
-  function cmdCoordinator({ flags, mainRoot, team, dir }) {
+  function cmdCoordinator({ flags, mainRoot, team, dir, roleEnv }) {
     const top = repoRoot(cwd);
     if (!top || !sameDir(top, mainRoot)) {
       throw new Exit(2, `offlimits team: run the coordinator from the main checkout (${mainRoot}), not a worktree`);
@@ -235,12 +249,14 @@ export async function main(argv, deps = {}) {
     }
     ensureTeamDir(dir);
     const lock = path.join(dir, 'coordinator.json');
-    const held = readJson(lock);
-    if (held && isAlive(held.pid) && !flags.takeover) {
-      throw new Exit(4, `offlimits team: a coordinator is already running (pid ${held.pid}); use --takeover to replace it`);
-    }
-    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: stamp() }, null, 2) + '\n');
-    const childEnv = { ...env, OFFLIMITS_ROLE: 'coordinator', OFFLIMITS_TEAM_LAUNCHER_PID: String(process.pid) };
+    withLock(dir, () => {
+      const held = readJson(lock);
+      if (held && isAlive(held.pid) && !flags.takeover) {
+        throw new Exit(4, `offlimits team: a coordinator is already running (pid ${held.pid}); use --takeover to replace it`);
+      }
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: stamp() }, null, 2) + '\n');
+    });
+    const childEnv = { ...env, [roleEnv]: 'coordinator', OFFLIMITS_TEAM_LAUNCHER_PID: String(process.pid) };
     delete childEnv.OFFLIMITS_LANE;
     try {
       const code = spawnSession('claude', args, { cwd: mainRoot, env: childEnv });
@@ -277,7 +293,7 @@ export async function main(argv, deps = {}) {
         lastCommitAge: st ? st.lastCommitAge : null,
         delivery: fs.existsSync(path.join(dir, 'deliveries', `${name}.md`)),
         questions,
-        worktreeMissing: typeof l.worktree === 'string' && !fs.existsSync(l.worktree),
+        worktreeMissing: isLive(l) && typeof l.worktree === 'string' ? !fs.existsSync(l.worktree) : null,
       };
     });
     if (flags.json) {
@@ -288,7 +304,7 @@ export async function main(argv, deps = {}) {
       ['lane', 'stage', 'ahead/behind', 'dirty', 'last-commit', 'delivery', 'questions', 'worktree-missing'],
       ...rows.map((r) => [
         r.lane, String(r.stage), r.ahead == null ? '-' : `${r.ahead}/${r.behind}`, r.dirty == null ? '-' : r.dirty ? 'dirty' : 'clean',
-        ageText(r.lastCommitAge), r.delivery ? 'yes' : 'no', String(r.questions), r.worktreeMissing ? 'yes' : 'no',
+        ageText(r.lastCommitAge), r.delivery ? 'yes' : 'no', String(r.questions), r.worktreeMissing == null ? '-' : r.worktreeMissing ? 'yes' : 'no',
       ]),
     ];
     const w = table[0].map((_, i) => Math.max(...table.map((row) => row[i].length)));
@@ -372,10 +388,16 @@ export async function main(argv, deps = {}) {
     const rec = readBoard(dir).lanes[lane];
     if (!rec) throw new Exit(2, `offlimits team: unknown lane "${lane}"`);
     assertLane(mainRoot, rec);
-    if (!flags.abandon && !laneStatus(mainRoot, rec, resolveBase(mainRoot, team.base)).merged) {
-      throw new Exit(1, `offlimits team: lane ${lane} is not merged into the base; merge it, or use --abandon to discard it`);
+    if (!flags.abandon) {
+      const st = laneStatus(mainRoot, rec, rec.base ?? resolveBase(mainRoot, team.base));
+      if (st.dirty) throw new Exit(1, `offlimits team: lane ${lane} has uncommitted changes; commit or use --abandon`);
+      let tip = null;
+      try { tip = execFileSync('git', ['rev-parse', rec.branch], { cwd: mainRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); } catch { /* unknown */ }
+      if (rec.startSha && tip === rec.startSha) throw new Exit(1, `offlimits team: lane ${lane} has no commits; use --abandon to drop it`);
+      if (!st.merged) throw new Exit(1, `offlimits team: lane ${lane} is not merged into the base; merge it, or use --abandon to discard it`);
     }
-    removeLane(mainRoot, rec, { force: true });
+    if (fs.existsSync(rec.worktree)) removeLane(mainRoot, rec, { force: true });
+    else pruneLane(mainRoot, rec);
     const stage = flags.abandon ? 'abandoned' : 'merged';
     updateLane(dir, lane, { stage });
     out(`lane ${lane}: ${stage}, worktree and branch removed`);

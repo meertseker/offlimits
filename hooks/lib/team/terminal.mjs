@@ -1,5 +1,5 @@
 // Cross-platform terminal opener for team sessions. Node built-ins only.
-import { spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 const ID = /^[A-Za-z0-9][\w.-]*$/;
 // prompt allowlist: letters, digits, space and . , :  / - _ ( )
@@ -17,8 +17,11 @@ function promptText(v) {
   return s;
 }
 
-export function sessionCommand({ shell, role, lane, model, name, prompt }) {
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function sessionCommand({ shell, role, lane, model, name, prompt, roleEnv = 'OFFLIMITS_ROLE' }) {
   if (shell !== 'pwsh' && shell !== 'sh') throw new Error('unsafe value');
+  if (!ENV_NAME.test(String(roleEnv))) throw new Error('unsafe value');
   const r = ident(role);
   const m = ident(model);
   const n = ident(name);
@@ -26,11 +29,11 @@ export function sessionCommand({ shell, role, lane, model, name, prompt }) {
   const l = lane == null || lane === '' ? null : ident(lane);
   const tail = `claude --model ${m} -n ${n} '${p}'`;
   if (shell === 'pwsh') {
-    const env = [`$env:OFFLIMITS_ROLE='${r}'`];
+    const env = [`$env:${roleEnv}='${r}'`];
     if (l !== null) env.push(`$env:OFFLIMITS_LANE='${l}'`);
     return `${env.join('; ')}; ${tail}`;
   }
-  const env = [`OFFLIMITS_ROLE=${r}`];
+  const env = [`${roleEnv}=${r}`];
   if (l !== null) env.push(`OFFLIMITS_LANE=${l}`);
   return `${env.join(' ')} ${tail}`;
 }
@@ -70,8 +73,9 @@ export function launchSpec({ platform, dir, title, command, has }) {
   return null;
 }
 
-export function openTerminal(spec, spawnFn = spawn) {
+export function openTerminal(spec, spawnFn = spawn, env) {
   const opts = { ...(spec.options || {}), detached: true, stdio: 'ignore' };
+  if (env) opts.env = env;
   if (process.platform === 'win32') opts.windowsHide = true;
   const child = spawnFn(spec.file, spec.args, opts);
   if (child && typeof child.on === 'function') {
@@ -86,4 +90,38 @@ export function hasBin(bin) {
     ? spawnSync('where', [bin], { stdio: 'ignore' })
     : spawnSync('sh', ['-c', 'command -v "$1"', 'sh', bin], { stdio: 'ignore' });
   return r.status === 0;
+}
+
+const CLAUDE_ARG = /^[A-Za-z0-9][\w.-]*$/;
+const CLAUDE_FLAGS = ['--model', '-n', '--continue'];
+
+function whereClaude() {
+  try {
+    return execFileSync('where', ['claude'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+      .split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * How to run `claude <args>` in the foreground without a shell string built from user input.
+ * Windows: resolve with `where`, run a .exe directly, or a .cmd/.bat through cmd.exe with re-validated args.
+ * @returns {{file: string, args: string[], options: object}}
+ */
+export function claudeInvocation(args, { platform = process.platform, where = whereClaude } = {}) {
+  if (platform !== 'win32') return { file: 'claude', args, options: {} };
+  for (const a of args) if (!CLAUDE_FLAGS.includes(a) && !CLAUDE_ARG.test(a)) throw new Error('unsafe value');
+  const found = where('claude');
+  const exe = found.find((p) => /\.exe$/i.test(p));
+  if (exe) return { file: exe, args, options: {} };
+  const shim = found.find((p) => /\.(cmd|bat)$/i.test(p));
+  if (!shim) throw new Error('claude not found on PATH');
+  if (/["%&|^<>\r\n]/.test(shim)) throw new Error('unsafe value');
+  // /s strips the outer quotes, leaving: "<shim>" args
+  return {
+    file: 'cmd.exe',
+    args: ['/d', '/s', '/c', `""${shim}" ${args.join(' ')}"`],
+    options: { windowsVerbatimArguments: true },
+  };
 }

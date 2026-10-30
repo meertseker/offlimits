@@ -8,9 +8,9 @@ import { main } from '../hooks/lib/team/cli.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
-function fixture() {
+function fixture(repoName = 'repo') {
   const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-cli-')));
-  const root = path.join(tmp, 'repo');
+  const root = path.join(tmp, repoName);
   fs.mkdirSync(root);
   git(root, '-c', 'init.defaultBranch=main', 'init');
   git(root, 'config', 'user.name', 'T');
@@ -155,13 +155,28 @@ test('night brief', async () => {
   } finally { f.cleanup(); }
 });
 
-test('unsafe model is refused with a hint', async () => {
+test('unsafe model is refused before any git or board change', async () => {
   const f = fixture();
   try {
     const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--model', 'a b;c', '--print']);
     assert.equal(w.code, 1);
-    assert.match(w.err, /cannot build a safe terminal command \(unsafe value\); run it yourself:/);
+    assert.ok(w.err.includes("--model must match"), w.err);
     assert.equal(f.calls.open.length, 0);
+    assert.ok(!fs.existsSync(path.join(f.tmp, 'repo-demo')));
+    assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
+    assert.ok(!fs.existsSync(path.join(f.dir, 'board.json')));
+  } finally { f.cleanup(); }
+});
+
+test('unsafe brief path names the path and leaves nothing behind', async () => {
+  const f = fixture('re+po');
+  try {
+    const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    assert.equal(w.code, 1);
+    assert.match(w.err, /the brief path contains characters a terminal command cannot carry safely: .*demo.md; move the repo to a path without/);
+    assert.ok(!fs.existsSync(path.join(f.tmp, 're+po-demo')));
+    assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
+    assert.ok(!fs.existsSync(path.join(f.dir, 'board.json')));
   } finally { f.cleanup(); }
 });
 
@@ -382,5 +397,71 @@ test('init prints the profile line; help and unknown command', async () => {
     assert.match((await f.run(['help'])).out, /coordinator/);
     assert.match((await f.run([])).out, /worker/);
     assert.equal((await f.run(['bogus'])).code, 2);
+  } finally { f.cleanup(); }
+});
+
+test('done refuses a dirty merged lane and keeps the file', async () => {
+  const f = fixture();
+  try {
+    await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    const wt = path.join(f.tmp, 'repo-demo');
+    fs.writeFileSync(path.join(wt, 'new.txt'), 'n');
+    git(wt, 'add', '.');
+    git(wt, 'commit', '-m', 'work');
+    git(f.root, 'merge', '--no-edit', 'feat/demo');
+    fs.writeFileSync(path.join(wt, 'precious.txt'), 'unsaved');
+    const r = await f.run(['done', 'demo']);
+    assert.equal(r.code, 1);
+    assert.match(r.err, /lane demo has uncommitted changes; commit or use --abandon/);
+    assert.ok(fs.existsSync(path.join(wt, 'precious.txt')));
+  } finally { f.cleanup(); }
+});
+
+test('done refuses a zero-commit lane; --abandon removes it', async () => {
+  const f = fixture();
+  try {
+    await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    const wt = path.join(f.tmp, 'repo-demo');
+    const rec = JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes.demo;
+    assert.equal(rec.startSha, git(f.root, 'rev-parse', 'feat/demo'));
+    assert.equal(rec.base, 'main');
+    const r = await f.run(['done', 'demo']);
+    assert.equal(r.code, 1);
+    assert.match(r.err, /lane demo has no commits; use --abandon to drop it/);
+    assert.ok(fs.existsSync(wt));
+    assert.equal((await f.run(['done', 'demo', '--abandon'])).code, 0);
+    assert.ok(!fs.existsSync(wt));
+  } finally { f.cleanup(); }
+});
+
+test('done with a hand-deleted worktree prunes and drops the branch', async () => {
+  const f = fixture();
+  try {
+    await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    const wt = path.join(f.tmp, 'repo-demo');
+    fs.rmSync(wt, { recursive: true, force: true });
+    assert.match((await f.run(['board'])).out, /demo {2}briefed.* yes$/m);
+    const r = await f.run(['done', 'demo', '--abandon']);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
+    assert.match((await f.run(['board'])).out, /demo {2}abandoned.* -$/m);
+  } finally { f.cleanup(); }
+});
+
+test('coordinator child env uses the configured roleEnv; terminal env is scrubbed', async () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(path.join(f.root, 'offlimits.json'), JSON.stringify({ roleEnv: 'MY_ROLE', team: {} }));
+    const r = await f.run(['coordinator']);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(f.calls.spawn[0].env.MY_ROLE, 'coordinator');
+    const seen = [];
+    const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md')], {
+      env: { KEEP: '1', MY_ROLE: 'x', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1' },
+      extra: { openTerminal: (spec, fn, env) => seen.push({ spec, fn, env }) },
+    });
+    assert.equal(w.code, 0, w.err);
+    assert.deepEqual(seen[0].env, { KEEP: '1' });
+    assert.ok(seen[0].spec.args.join(' ').includes('MY_ROLE'));
   } finally { f.cleanup(); }
 });
