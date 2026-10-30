@@ -9,7 +9,7 @@ import { loadTeam } from './config.mjs';
 import { guard } from './guard.mjs';
 import { runInit } from './init.mjs';
 import { LANE_RE, addLane, assertLane, lanePath, laneStatus, pruneLane, removeLane, resolveBase } from './lanes.mjs';
-import { STAGES, ensureTeamDir, readBoard, reserve, teamDir, updateLane, withLock, writeBoard } from './state.mjs';
+import { STAGES, ensureTeamDir, readBoard, reserve, updateLane, withLock, writeBoard } from './state.mjs';
 import { claudeInvocation, hasBin, launchSpec, openTerminal, sessionCommand } from './terminal.mjs';
 
 const BIN = fileURLToPath(new URL('../../../bin/team.mjs', import.meta.url));
@@ -131,8 +131,11 @@ export async function main(argv, deps = {}) {
     }
     if (!COMMANDS.includes(cmd)) throw new Exit(2, `offlimits team: unknown command "${cmd}"\n${USAGE}`);
 
-    const mainRoot = commonRoot(cwd);
-    if (!mainRoot) throw new Exit(2, 'offlimits team: not inside a git repository');
+    const rawRoot = commonRoot(cwd);
+    if (!rawRoot) throw new Exit(2, 'offlimits team: not inside a git repository');
+    // Long canonical form: an 8.3 short path (C:\Users\RUNNER~1\...) would put '~' into the worker prompt.
+    let mainRoot = rawRoot;
+    try { mainRoot = fs.realpathSync.native(rawRoot); } catch { /* keep git's form */ }
     const { policy } = loadPolicy(mainRoot);
     const refusal = guard(cmd, env, policy.roleEnv);
     if (refusal) throw new Exit(3, refusal);
@@ -143,7 +146,7 @@ export async function main(argv, deps = {}) {
     if (cmd !== 'init') for (const p of problems) err(`offlimits team: ${p}${fatal ? '' : ' (using default)'}`);
     if (fatal && (cmd === 'worker' || cmd === 'coordinator')) throw new Exit(2, 'offlimits team: fix offlimits.json before starting sessions');
 
-    const ctx = { flags, pos, mainRoot, team, dir: teamDir(cwd), role, roleEnv: policy.roleEnv };
+    const ctx = { flags, pos, mainRoot, team, dir: path.join(mainRoot, '.offlimits', 'team'), role, roleEnv: policy.roleEnv };
     switch (cmd) {
       case 'init': return cmdInit(ctx);
       case 'coordinator': return cmdCoordinator(ctx);

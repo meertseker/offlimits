@@ -45,7 +45,7 @@ test('at most 25 lines with 30 lanes', () => {
 });
 
 function teamRepo() {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-tb-')));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-tb-')));
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   execFileSync('git', ['-c', 'user.email=t@e.c', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i'], { cwd: dir });
   fs.mkdirSync(path.join(dir, '.offlimits', 'team', 'briefs'), { recursive: true });

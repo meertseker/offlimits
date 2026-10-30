@@ -9,7 +9,7 @@ import { main } from '../hooks/lib/team/cli.mjs';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 function fixture(repoName = 'repo') {
-  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-cli-')));
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-cli-')));
   const root = path.join(tmp, repoName);
   fs.mkdirSync(root);
   git(root, '-c', 'init.defaultBranch=main', 'init');
@@ -503,5 +503,24 @@ test('a failing addLane removes the placeholder; a failing finalise rolls the wo
     assert.ok(!fs.existsSync(path.join(f.tmp, 'repo-demo')));
     assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes, {});
+  } finally { f.cleanup(); }
+});
+
+function shortPath(p) {
+  try {
+    return execFileSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${p}") do @echo %~sI"`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, windowsVerbatimArguments: true }).trim();
+  } catch { return ''; }
+}
+
+test('a cwd given as an 8.3 short path still launches', { skip: process.platform !== 'win32' }, async (t) => {
+  const f = fixture('repository-with-a-long-name');
+  try {
+    const short = shortPath(f.root);
+    if (!short.includes('~')) { t.skip('8.3 names are disabled on this volume'); return; }
+    const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print'], { cwd: short });
+    assert.equal(w.code, 0, w.err);
+    assert.ok(!w.out.includes('~'), w.out);
+    assert.ok(w.out.includes(path.join(f.dir, 'briefs', 'demo.md')), w.out);
+    assert.ok(fs.existsSync(path.join(f.dir, 'briefs', 'demo.md')));
   } finally { f.cleanup(); }
 });

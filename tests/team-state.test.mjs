@@ -10,7 +10,7 @@ import {
 } from '../hooks/lib/team/state.mjs';
 
 const STATE_URL = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'lib', 'team', 'state.mjs')).href;
-const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-team-')));
+const tmp = () => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-team-')));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 test('STAGES lists the lifecycle', () => {

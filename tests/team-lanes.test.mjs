@@ -10,7 +10,7 @@ import { TEAM_DEFAULTS } from '../hooks/lib/team/config.mjs';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 function fixture(repoName = 'repo') {
-  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-lanes-')));
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-lanes-')));
   const root = path.join(tmp, repoName);
   fs.mkdirSync(root);
   git(root, '-c', 'init.defaultBranch=main', 'init');

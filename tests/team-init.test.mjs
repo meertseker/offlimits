@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { runInit, renderTemplate } from '../hooks/lib/team/init.mjs';
 
 const repo = () => {
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-init-')));
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-init-')));
   execFileSync('git', ['init', '-q'], { cwd: d });
   return d;
 };
