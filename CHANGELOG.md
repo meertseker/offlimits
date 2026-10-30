@@ -9,7 +9,7 @@ Added:
 
 Fixed:
 
-- Terminal launchers are now unwrapped by the gate: `start` (cmd and PowerShell), `Start-Process`/`saps`, `wt` (with `nt`, `new-tab`, `sp`, `split-pane`), `x-terminal-emulator`, `xterm`, `konsole`, `gnome-terminal` and similar, and `osascript` `do script` bodies. The command they open is checked like a nested shell (`pwsh -Command`, `bash -c`, `cmd /c`), so a worker can no longer run a blocked command by opening it in a new window. Unreadable forms (an `osascript` script without `do script`, a `Start-Process` argument list built from variables) go through `opaque-shell`. This gap existed in 0.3.0.
+- Terminal launchers are now unwrapped by the gate (including a titled cmd `start` with switches, PowerShell `@(...)` and comma argument lists, `cmd /c "wt ; nt ..."`, prefix wrappers such as `nohup`/`sudo`, and `kitty`/`foot` options): `start` (cmd and PowerShell), `Start-Process`/`saps`, `wt` (with `nt`, `new-tab`, `sp`, `split-pane`), `x-terminal-emulator`, `xterm`, `konsole`, `gnome-terminal` and similar, and `osascript` `do script` bodies. The command they open is checked like a nested shell (`pwsh -Command`, `bash -c`, `cmd /c`), so a worker can no longer run a blocked command by opening it in a new window. Unreadable forms (an `osascript` script without `do script`, a `Start-Process` argument list built from variables) go through `opaque-shell`. This gap existed in 0.3.0.
 - A launched worker or subagent that hides the team subcommand behind a variable or substitution (`team $T`, `team $(echo start)`) is denied.
 - The SessionStart banner now says to start the coordinator with `/offlimits start`.
 - The environment scrub for launched terminals is case-insensitive on Windows and shared by `worker` and `start`.

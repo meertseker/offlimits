@@ -93,9 +93,10 @@ function scan(s, literalBackslash, marks = false) {
       cur += c;
       continue;
     }
-    if (c === '$' && s[i + 1] === '(') {
+    if ((c === '$' || c === '@') && s[i + 1] === '(') {
+      // $( ... ) and PowerShell's @( ... ) stay in one segment; substitutions() hands the inside on
       depth++;
-      cur += '$(';
+      cur += c + '(';
       i++;
       continue;
     }
@@ -373,7 +374,7 @@ function substitutions(s) {
       q = q === c ? null : (q ?? c);
       continue;
     }
-    if (c === '$' && s[i + 1] === '(') {
+    if ((c === '$' || c === '@') && s[i + 1] === '(') {
       let depth = 1;
       let j = i + 2;
       let iq = null;
@@ -486,62 +487,167 @@ function quoteJoin(argv) {
 const OPAQUE_BODY = { opaque: true };
 const hasExpansion = (s) => /[$`]/.test(s);
 
-const PS_START_VALUE = ['filepath', 'file', 'path', 'argumentlist', 'args', 'arguments', 'workingdirectory', 'wd', 'verb', 'windowstyle', 'redirectstandardinput', 'redirectstandardoutput', 'redirectstandarderror', 'credential'];
-const PS_START_SWITCH = new Set(['wait', 'nonewwindow', 'passthru', 'usenewenvironment', 'loadenvironment']);
+
+/** The raw text after the first word of a segment (leading NAME=value pairs removed). */
+function rawAfterCommand(segment) {
+  const rest = stripAssignments(segment).rest;
+  let i = 0;
+  while (i < rest.length && /\s/.test(rest[i])) i++;
+  const [, next] = readWord(rest, i, false);
+  return rest.slice(next);
+}
+
+/**
+ * PowerShell-style words: quotes ('' and "" with backtick escapes), @( ... ) arrays and comma lists are one word with several
+ * items. Each word: { items, quoted (starts with a quote), expansion (unquoted/double-quoted $ or subexpression) }.
+ */
+function psWords(s) {
+  const words = [];
+  const n = s.length;
+  let i = 0;
+  const ws = (c) => /\s/.test(c);
+  while (i < n) {
+    while (i < n && ws(s[i])) i++;
+    if (i >= n) break;
+    const w = { items: [], quoted: s[i] === "'" || s[i] === '"', expansion: false };
+    let cur = '';
+    let has = false;
+    let afterComma = false;
+    const push = () => { if (has) w.items.push(cur); cur = ''; has = false; };
+    while (i < n) {
+      const c = s[i];
+      if (ws(c)) {
+        let j = i;
+        while (j < n && ws(s[j])) j++;
+        if (afterComma || s[j] === ',') { i = j; continue; }
+        break;
+      }
+      if (c === ',') { push(); afterComma = true; i++; continue; }
+      afterComma = false;
+      if (c === "'") {
+        has = true;
+        i++;
+        while (i < n) {
+          if (s[i] === "'") { if (s[i + 1] === "'") { cur += "'"; i += 2; continue; } break; }
+          cur += s[i++];
+        }
+        i++;
+      } else if (c === '"') {
+        has = true;
+        i++;
+        while (i < n && s[i] !== '"') {
+          if (s[i] === '`' && i + 1 < n) { cur += s[i + 1]; i += 2; continue; }
+          if (s[i] === '$' && /[A-Za-z_{(]/.test(s[i + 1] ?? '')) w.expansion = true;
+          cur += s[i++];
+        }
+        i++;
+      } else if ((c === '@' || c === '$') && s[i + 1] === '(') {
+        let depth = 0;
+        let q = null;
+        let j = i + 1;
+        for (; j < n; j++) {
+          const d = s[j];
+          if (q) { if (d === q) q = null; continue; }
+          if (d === "'" || d === '"') q = d;
+          else if (d === '(') depth++;
+          else if (d === ')' && --depth === 0) break;
+        }
+        if (c === '@') {
+          push();
+          for (const inner of psWords(s.slice(i + 2, j))) w.items.push(...inner.items);
+          if (psWords(s.slice(i + 2, j)).some((x) => x.expansion)) w.expansion = true;
+        } else { w.expansion = true; has = true; cur += s.slice(i, j + 1); }
+        i = j + 1;
+      } else {
+        if (c === '$' && /[A-Za-z_{]/.test(s[i + 1] ?? '')) w.expansion = true;
+        if (c === '`') w.expansion = true;
+        has = true;
+        cur += c;
+        i++;
+      }
+    }
+    push();
+    words.push(w);
+  }
+  return words;
+}
+
+const PS_START_VALUE = new Set(['filepath', 'file', 'path', 'argumentlist', 'args', 'arguments', 'workingdirectory', 'wd', 'verb', 'windowstyle', 'redirectstandardinput', 'redirectstandardoutput', 'redirectstandarderror', 'credential']);
+const PS_START_SWITCH = new Set(['-wait', '-nonewwindow', '-passthru', '-usenewenvironment', '-loadenvironment']);
 const CMD_START_VALUE = new Set(['/d', '/affinity', '/node']);
 const CMD_START_SWITCH = new Set(['/min', '/max', '/wait', '/b', '/i', '/low', '/normal', '/high', '/realtime', '/abovenormal', '/belownormal', '/separate', '/shared']);
 
-/** cmd `start` and PowerShell Start-Process / saps / start. */
-function startBodies(args) {
+/** cmd `start` and PowerShell Start-Process / saps / start. text is the raw text after the command word. */
+function startBodies(name, text) {
   const out = [];
-  const used = new Set();
+  const ws = psWords(text);
   const named = {};
-  for (let k = 0; k < args.length; k++) {
-    const m = /^-([A-Za-z]+)(?::(.*))?$/.exec(args[k]);
-    if (!m) continue;
-    const n = m[1].toLowerCase();
-    if (PS_START_VALUE.includes(n)) {
-      if (m[2] !== undefined) { named[n] = m[2]; used.add(k); } else if (k + 1 < args.length) { named[n] = args[k + 1]; used.add(k); used.add(k + 1); }
+  const used = new Set();
+  for (let k = 0; k < ws.length; k++) {
+    const w = ws[k];
+    if (w.quoted || !w.items.length) continue;
+    const m = /^-([A-Za-z]+)(?::(.*))?$/s.exec(w.items[0]);
+    if (!m || !PS_START_VALUE.has(m[1].toLowerCase())) continue;
+    if (m[2] === undefined && w.items.length !== 1) continue;
+    const key = m[1].toLowerCase();
+    used.add(k);
+    // -Name:value, where the value may itself be a comma list
+    if (m[2] !== undefined) named[key] = { items: [m[2], ...w.items.slice(1)].filter((x, n) => n > 0 || x !== '' || w.items.length === 1), expansion: w.expansion };
+    else if (k + 1 < ws.length) { named[key] = ws[k + 1]; used.add(k + 1); }
+  }
+  const pick = (...ns) => ns.map((x) => named[x]).find((v) => v !== undefined);
+  const wdW = pick('workingdirectory', 'wd');
+  const wd = wdW ? wdW.items[0] : undefined;
+  const fileW = pick('filepath', 'file', 'path');
+  const listW = pick('argumentlist', 'args', 'arguments');
+  const free = ws.filter((_, k) => !used.has(k));
+  const mk = (text2) => (wd !== undefined ? { text: text2, chdir: wd } : { text: text2 });
+
+  const run = (words, skipTitle, titleAfter = false) => {
+    let k = skipTitle ? 1 : 0;
+    // switches before the program: PowerShell -Wait ..., cmd /min, /D <dir>, /NODE <n>, /AFFINITY <hex>
+    for (; k < words.length; k++) {
+      const x = words[k];
+      const v = x.items.length === 1 && !x.quoted ? x.items[0].toLowerCase() : '';
+      if (PS_START_SWITCH.has(v) || CMD_START_SWITCH.has(v)) continue;
+      if (CMD_START_VALUE.has(v)) { k++; continue; }
+      break;
     }
-  }
-  const pick = (...ns) => ns.map((n) => named[n]).find((v) => v !== undefined);
-  const wd = pick('workingdirectory', 'wd');
-  let file = pick('filepath', 'file', 'path');
-  const list = pick('argumentlist', 'args', 'arguments');
-  // leading options before the program: PowerShell switches, cmd /D dir, /min ...
-  let k = 0;
-  const rest = [];
-  let seenExe = file !== undefined;
-  for (; k < args.length; k++) {
-    if (used.has(k)) continue;
-    const a = args[k];
-    const low = a.toLowerCase();
-    if (!seenExe && /^-[A-Za-z]+$/.test(a) && PS_START_SWITCH.has(low.slice(1))) continue;
-    if (!seenExe && CMD_START_SWITCH.has(low)) continue;
-    if (!seenExe && CMD_START_VALUE.has(low)) { k++; continue; }
-    if (a === '') continue;
-    seenExe = true;
-    rest.push(a);
-  }
-  const emit = (exe, argv, raw = false) => {
-    if (exe === undefined || exe === '') return;
-    if (hasExpansion(exe) || argv.some(hasExpansion)) { out.push(OPAQUE_BODY); return; }
-    const text = raw ? [quoteJoin([exe]), ...argv].join(' ') : quoteJoin([exe, ...argv]);
-    out.push(wd ? { text, chdir: wd } : { text });
+    // cmd is picky about order, but a title after the switches is cheap to check as well
+    if (titleAfter && k < words.length) {
+      k++;
+      for (; k < words.length; k++) {
+        const x = words[k];
+        const v = x.items.length === 1 && !x.quoted ? x.items[0].toLowerCase() : '';
+        if (PS_START_SWITCH.has(v) || CMD_START_SWITCH.has(v)) continue;
+        if (CMD_START_VALUE.has(v)) { k++; continue; }
+        break;
+      }
+    }
+    let exeW;
+    let rest;
+    if (fileW) { exeW = fileW; rest = words.slice(k); } else { exeW = words[k]; rest = words.slice(k + 1); }
+    if (!exeW || exeW.items.length === 0) return;
+    // the argument list: -ArgumentList, else PowerShell's second positional, else cmd's trailing words
+    let argv;
+    let raw = false;
+    let expansion = exeW.expansion;
+    if (listW) { argv = listW.items; raw = true; expansion ||= listW.expansion; }
+    else if (name !== 'start' && rest.length) { argv = rest[0].items; raw = true; expansion ||= rest.some((x) => x.expansion); }
+    else if (rest.length === 1 && rest[0].items.length > 1) { argv = rest[0].items; raw = true; expansion ||= rest[0].expansion; }
+    else { argv = rest.flatMap((x) => x.items); expansion ||= rest.some((x) => x.expansion); }
+    if (expansion) { out.push(OPAQUE_BODY); return; }
+    const prog = exeW.items[0];
+    // a lone PowerShell string such as 'push origin main' is a whole argument line; array items are joined by spaces
+    out.push(mk(raw ? [quoteJoin([prog]), ...argv].join(' ') : quoteJoin([prog, ...argv])));
   };
-  // -ArgumentList is an array ('a','b' tokenises to a,b) or one string of arguments
-  const rawList = list !== undefined && !list.includes(',');
-  const listArgs = list === undefined ? null : rawList ? [list] : list.split(',').map((x) => x.trim()).filter(Boolean);
-  if (file !== undefined) {
-    emit(file, listArgs ?? rest, rawList);
-    return out;
-  }
-  // cmd `start ["title"] program args`: the title is a quoted first word we cannot tell apart, so check both readings
-  const readings = rest.length > 1 ? [rest, rest.slice(1)] : [rest];
-  for (const r of readings) {
-    const [exe, ...tail] = r;
-    emit(exe, listArgs ?? tail, rawList);
-  }
+
+  if (name === 'start') {
+    // cmd takes a first quoted word as the window title; PowerShell takes it as the program: check both readings
+    if (free.length > 1 || (free.length && free[0].quoted)) run(free, true);
+    if (free.length > 2) run(free, false, true);
+    run(free, false);
+  } else run(free, false);
   return out;
 }
 
@@ -579,9 +685,32 @@ function wtBodies(args) {
 const TERMINAL_EMULATORS = new Set(['x-terminal-emulator', 'xterm', 'konsole', 'gnome-terminal', 'mate-terminal', 'xfce4-terminal', 'terminator', 'tilix', 'lxterminal', 'urxvt', 'rxvt', 'alacritty', 'kitty', 'foot']);
 
 /** Linux terminals: the command follows -e / -x / --. */
+const KITTY_BOOL = new Set(['--hold', '--single-instance', '-1', '--detach', '--detached', '--wait-for-single-instance-window-close', '--debug-config']);
+const KITTY_VALUE = new Set(['--class', '--name', '--title', '-T', '--directory', '-d', '--config', '-c', '--override', '-o', '--session', '--listen-on', '--start-as', '--os-window-state', '--instance-group', '--watcher']);
+const FOOT_BOOL = new Set(['-L', '--login-shell', '-m', '--maximized', '-F', '--fullscreen', '-S', '--server']);
+const FOOT_VALUE = new Set(['-t', '--title', '-a', '--app-id', '-w', '--window-size-pixels', '-W', '--window-size-chars', '-c', '--config', '-f', '--font', '-o', '--override', '-D', '--working-directory', '-T', '-s']);
+
+/** kitty and foot take the command directly after their own options; an option we do not know makes it opaque. */
+function optionedTerminalBody(args, bools, values) {
+  let k = 0;
+  while (k < args.length) {
+    const a = args[k];
+    if (a === '--') { k++; break; }
+    if (!a.startsWith('-')) break;
+    const flag = a.includes('=') ? a.slice(0, a.indexOf('=')) : a;
+    if (bools.has(flag)) k++;
+    else if (values.has(flag)) k += a.includes('=') ? 1 : 2;
+    else return [OPAQUE_BODY];
+  }
+  if (args[0] === '@') return [OPAQUE_BODY];
+  return terminalTail(args.slice(k));
+}
+
 function terminalBodies(name, args) {
+  if (name === 'kitty') return optionedTerminalBody(args, KITTY_BOOL, KITTY_VALUE);
+  if (name === 'foot') return optionedTerminalBody(args, FOOT_BOOL, FOOT_VALUE);
   let k = args.findIndex((a) => a === '-e' || a === '-x' || a === '--' || a === '--command' || a === '--exec' || a.startsWith('--command=') || a.startsWith('--exec='));
-  if (k === -1) return name === 'kitty' || name === 'foot' ? terminalTail(args) : [];
+  if (k === -1) return [];
   const a = args[k];
   if (a.includes('=')) return terminalTail([a.slice(a.indexOf('=') + 1)]);
   return terminalTail(args.slice(k + 1));
@@ -593,6 +722,9 @@ function terminalTail(argv) {
   // a single word with spaces is a whole command line (gnome-terminal -e "git push origin main")
   return [{ text: argv.length === 1 ? argv[0] : quoteJoin(argv) }];
 }
+
+// words a prefix wrapper (nohup, sudo, env ...) may stop at: nested shells are in SHELL_LIKE, these open another window
+const LAUNCHERS = new Set([...TERMINAL_EMULATORS, 'wt', 'osascript']);
 
 /** osascript: pull `do script "..."` bodies out of the AppleScript; any other script is opaque. */
 function osascriptBodies(args) {
@@ -647,7 +779,7 @@ function carrierBodies(toks, i, segment) {
     const body = p ? p.value : args.join(' ');
     if (body) out.push({ text: body });
   } else if (name === 'start-process' || name === 'saps' || name === 'start') {
-    out.push(...startBodies(args));
+    out.push(...startBodies(name, rawAfterCommand(segment)));
   } else if (name === 'wt') {
     out.push(...wtBodies(args));
   } else if (TERMINAL_EMULATORS.has(name)) {
@@ -702,9 +834,10 @@ function wrapperInfo(segment) {
   if (isWrapper(baseName(toks[i]))) {
     // Skip the prefix together with its flags and values, up to the next shell-like token.
     let k = i + 1;
-    while (k < toks.length && !SHELL_LIKE.has(baseName(toks[k]))) k++;
+    while (k < toks.length && !SHELL_LIKE.has(baseName(toks[k])) && !LAUNCHERS.has(baseName(toks[k]))) k++;
     if (k >= toks.length) return done([], false);
     i = k;
+    if (LAUNCHERS.has(baseName(toks[k]))) carried.push(...carrierBodies(toks, k, segment));
   }
   const name = baseName(toks[i]);
   const args = toks.slice(i + 1);
@@ -752,7 +885,8 @@ function wrapperInfo(segment) {
     const k = args.findIndex((a) => /^\/[ck]/i.test(a));
     if (k === -1) return done([], false);
     const first = args[k].slice(2); // e.g. /c"git push" tokenises to "/cgit push"
-    const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ');
+    // cmd has no ';' separator: quote it so it stays inside this body (wt gives it meaning later)
+    const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ').replace(/;/g, "';'");
     return done(body ? [body] : [], false);
   }
   return done([], false);

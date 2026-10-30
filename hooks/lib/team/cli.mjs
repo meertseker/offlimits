@@ -152,7 +152,7 @@ export async function main(argv, deps = {}) {
       // a human's folder with no repository yet: make one (a worker or subagent is still refused first)
       const refused = guard(cmd, env);
       if (refused) throw new Exit(3, refused);
-      if (isUnsafeInitDir(cwd, home())) throw new Exit(2, `offlimits team: refusing to run git init in ${cwd} (your home directory or a drive root); make a project folder first and run init there`);
+      if (isUnsafeInitDir(cwd, home(), platform)) throw new Exit(2, `offlimits team: refusing to run git init in ${cwd} (your home directory or a drive root); make a project folder first and run init there`);
       try { makeGitRepo(cwd); } catch (e) { throw new Exit(2, `offlimits team: git init failed in ${cwd} (${e.message})`); }
       initialisedGit = true;
     }

@@ -735,7 +735,7 @@ function neverInit(extra = {}) {
   return { gitInit: () => assert.fail('git init must not run'), ...extra };
 }
 
-test('init in a subfolder of a repo does not git init, even when git itself fails', async () => {
+test('init in a subfolder of a repo never calls git init, even when git itself fails', async () => {
   const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-fake-')));
   try {
     // a bare ".git" folder git cannot read: every git call fails, the walk still sees it
@@ -743,8 +743,10 @@ test('init in a subfolder of a repo does not git init, even when git itself fail
     const sub = path.join(tmp, 'a', 'b');
     fs.mkdirSync(sub, { recursive: true });
     const stderr = { s: '', write(x) { this.s += x; return true; } };
-    const code = await main(['init'], { env: {}, cwd: sub, stdout: { write() {} }, stderr, has: () => true, ...neverInit({ gitInit: () => { throw new Error('boom'); } }) });
-    assert.notEqual(code, 0);
+    const calls = [];
+    await main(['init'], { env: {}, cwd: sub, stdout: { write() {} }, stderr, has: () => true, gitInit: (d) => { calls.push(d); } });
+    // a spy, not a throw: if the walk-up failed to see the parent .git, this records the call and the test fails
+    assert.deepEqual(calls, []);
     assert.ok(!fs.existsSync(path.join(sub, '.git')));
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
@@ -786,6 +788,9 @@ test('isUnsafeInitDir flags the home directory and a drive root', async () => {
   assert.equal(isUnsafeInitDir(root, os.tmpdir()), true);
   assert.equal(isUnsafeInitDir(os.tmpdir(), os.tmpdir()), true);
   assert.equal(isUnsafeInitDir(path.join(os.tmpdir(), 'proj'), os.tmpdir()), false);
+  // the injected platform decides case folding, not the host
+  assert.equal(isUnsafeInitDir('/Home/Me', '/home/me', 'linux'), false);
+  assert.equal(isUnsafeInitDir('/Home/Me', '/home/me', 'win32'), true);
 });
 
 test('terminal env scrub is case-insensitive on win32 and exact elsewhere', async () => {

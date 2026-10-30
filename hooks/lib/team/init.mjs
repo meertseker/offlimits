@@ -25,9 +25,9 @@ export function insideGitRepo(dir, env = process.env) {
 }
 
 /** The home directory or a drive/filesystem root: never somewhere to auto-`git init`. */
-export function isUnsafeInitDir(dir, home = os.homedir()) {
+export function isUnsafeInitDir(dir, home = os.homedir(), platform = process.platform) {
   const d = path.resolve(dir);
-  const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const norm = (p) => (platform === 'win32' ? p.toLowerCase() : p);
   return d === path.parse(d).root || norm(d) === norm(path.resolve(home));
 }
 
