@@ -13,7 +13,7 @@ Running team commands
 - `team deliver --file <md>`: hand in your delivery.
 
 Workflow
-1. Design, then spec, then plan. Larger changes wait for explicit human approval.
+1. Design, then spec, then plan. Larger changes wait for explicit human approval (night mode: follow your brief).
 2. Build with subagents and TDD.
 3. Run every check below. Fix failures before going on.
 4. Deliver with `team deliver`. Never push the base branch, never deploy.
