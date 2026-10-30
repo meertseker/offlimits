@@ -23,6 +23,8 @@ export const DEFAULT_POLICY = Object.freeze({
     '.claude/hooks/**',
     'offlimits.json',
     '.github/workflows/**',
+    '.offlimits/team/board.json',
+    '.offlimits/team/coordinator.json',
   ],
   production: { mcpServers: [], projectRefs: [], hosts: [] },
   extraDeny: [],

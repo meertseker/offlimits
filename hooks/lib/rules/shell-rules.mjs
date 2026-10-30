@@ -890,6 +890,28 @@ function agentSpawn(c) {
   };
 }
 
+const TEAM_SUBS = new Set(['worker', 'done', 'coordinator', 'init']);
+
+function teamLaunch(c) {
+  const { name, args, raws } = c.info;
+  let sub;
+  if (name === 'node') {
+    // bash-style parsing eats backslashes in Windows paths, so look at the raw tokens too
+    const isTeam = (a) => /(^|[\\/])team\.mjs$/i.test(a ?? '');
+    const i = args.findIndex((a, k) => isTeam(a) || isTeam(raws[k]));
+    if (i < 0) return null;
+    sub = args[i + 1];
+  } else if (name === 'team' || name === 'offlimits-team') {
+    sub = args[0];
+  } else return null;
+  if (!TEAM_SUBS.has(sub)) return null;
+  if (c.ctx.role !== 'worker' && sub === 'init') return null;
+  return {
+    action: c.ctx.role === 'worker' ? 'deny' : 'ask',
+    reason: `${name} ${sub} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
+  };
+}
+
 const READ_ONLY = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'findstr', 'select-string', 'sls']);
 const GIT_READ = new Set(['grep', 'log', 'show', 'diff', 'commit', 'blame']);
 
@@ -944,6 +966,7 @@ export const RULES = [
   { id: 'deploy', test: deploy },
   { id: 'publish', test: publish },
   { id: 'agent-spawn', test: agentSpawn },
+  { id: 'team-launch', test: teamLaunch },
   { id: 'git-clean', test: gitClean },
 ];
 

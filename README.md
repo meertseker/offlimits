@@ -57,6 +57,7 @@ Shell rules apply to `Bash` and `PowerShell` calls. Commands are split on `;`, `
 | `role-spoof` | any command that assigns `OFFLIMITS_ROLE`, so an agent cannot promote itself |
 | `protected-file` | writes to `.claude/settings.json`, `.claude/hooks/**`, `offlimits.json` and `.github/workflows/**`, by file tools or by `>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content` and similar |
 | `agent-spawn` | a worker starting another agent CLI (`claude`, `codex`, `aider`, `gemini`), which would run without the worker marker; solo asks |
+| `team-launch` | `team worker`, `done`, `coordinator` or `init` from a worker or subagent (the CLI starts or removes team sessions, which only the coordinator does); solo asks, except `init` |
 | `git-clean` | `git clean -x` or `-X`, which also deletes ignored files such as `.env` and local databases; solo asks, `-n` passes |
 | `opaque-shell` | a shell that reads its commands from stdin, `eval` of generated text, nesting deeper than 8 levels, and commands too large to inspect in time (over 64 KB, 1000 segments or 200 variables); solo asks |
 | `extra-deny` | your own regexes from `offlimits.json` |
