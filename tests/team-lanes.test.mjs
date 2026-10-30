@@ -156,3 +156,45 @@ test('removeLane force removes unmerged dirty lane', () => {
     assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
   } finally { f.cleanup(); }
 });
+
+test('removeLane refuses branch main, option-like branch and the main checkout', () => {
+  const f = fixture();
+  try {
+    const wt = path.join(f.tmp, 'repo-x');
+    assert.throws(() => removeLane(f.root, { branch: 'main', worktree: wt }, { force: true }), /invalid lane branch/);
+    assert.throws(() => removeLane(f.root, { branch: '-D', worktree: wt }, { force: true }), /invalid lane branch/);
+    assert.throws(() => removeLane(f.root, { branch: 'feat/demo', worktree: f.root }, { force: true }), /main checkout/);
+    assert.equal(git(f.root, 'branch', '--list', 'main').includes('main'), true);
+  } finally { f.cleanup(); }
+});
+
+test('laneStatus refuses invalid branch', () => {
+  const f = fixture();
+  try {
+    assert.throws(() => laneStatus(f.root, { branch: '--all', worktree: path.join(f.tmp, 'w') }, 'main'), /invalid lane branch/);
+  } finally { f.cleanup(); }
+});
+
+test('removeLane without force refuses an unmerged clean lane and removes nothing', () => {
+  const f = fixture();
+  try {
+    const r = addLane(f.root, team, 'demo', { base: 'main' });
+    fs.writeFileSync(path.join(r.worktree, 'b.txt'), 'b');
+    git(r.worktree, 'add', '.');
+    git(r.worktree, 'commit', '-m', 'work');
+    assert.throws(() => removeLane(f.root, { branch: r.branch, worktree: r.worktree }, {}), /lane demo is not merged/);
+    assert.equal(fs.existsSync(r.worktree), true);
+    assert.notEqual(git(f.root, 'branch', '--list', 'feat/demo'), '');
+  } finally { f.cleanup(); }
+});
+
+test('addLane fetches origin with GIT_TERMINAL_PROMPT=0', () => {
+  const calls = [];
+  const exec = (cmd, args, opts) => {
+    calls.push({ args, env: opts.env });
+    return args[0] === 'remote' ? 'origin\n' : '';
+  };
+  addLane('/tmp/repo', team, 'demo', { base: 'main' }, exec);
+  const fetch = calls.find((c) => c.args[0] === 'fetch');
+  assert.equal(fetch.env.GIT_TERMINAL_PROMPT, '0');
+});
