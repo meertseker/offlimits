@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 - 2026-10-30
+
+Added:
+
+- `/offlimits start` (`team start [--print]`): a Claude session you opened yourself opens the coordinator in a new terminal window, in the main checkout. The window runs `team coordinator`, so the lock, the role and the `claude` spawn are the existing ones, in human context (the role and session variables of the calling session are not passed on). Launched workers and every subagent are still refused: by the CLI guard and by the `team-launch` gate rule (denied when the role is worker and does not come from `defaultRole`).
+- `init` in a folder that is not a git repository runs `git init` first (never inside an existing repository) and prints a `Next:` line.
+
+Changed:
+
+- `init` writes `"permissionMode": "bypassPermissions"` into a newly created `team` block, so unattended team windows do not stall on permission prompts; the gate is what keeps that safe. An existing `team` block is never touched.
+- The gate rule context carries `viaDefault`, so `team-launch` can tell a human's own session (worker only by `defaultRole`) from a launched worker.
+
 ## 0.3.0 - 2026-10-30
 
 Repositioned: offlimits now turns Claude Code into a software team (one coordinator, workers in their own worktrees) and keeps the gate that holds it together.

@@ -6,12 +6,14 @@ Team mode turns a repository into a small software team made of ordinary Claude 
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
-/offlimits init                       # inside Claude; prints the `team` shell function
-                                      # add that printed line to your shell profile
-team coordinator                      # in a terminal, then talk to it
+/offlimits init                       # inside Claude, in your project folder (an empty one is fine)
+git add -A && git commit -m "offlimits init"
+/offlimits start                      # a new window opens with the coordinator; talk to it there
 ```
 
-`<plugin>` is the folder the plugin is installed in. You do not need to know it for the first step: run `/offlimits init` inside a Claude Code session in the repository. The skill locates the plugin, runs `init` and prints the `team` shell function below with the absolute path filled in. Add it to your profile, then run `team coordinator` from a terminal. Afterwards the SessionStart banner prints the same path on its `team CLI:` line. There is no npm package, so the launcher is always `node <plugin>/bin/team.mjs`.
+The terminal alternative: add the `team` shell function that `init` prints to your profile and run `team coordinator`.
+
+`<plugin>` is the folder the plugin is installed in. You do not need to know it for the first step: run `/offlimits init` inside a Claude Code session in the repository. The skill locates the plugin, runs `init` and prints the `team` shell function below with the absolute path filled in. Commit the files it wrote, then run `/offlimits start` (or add the function to your profile and run `team coordinator` from a terminal). Afterwards the SessionStart banner prints the same path on its `team CLI:` line. There is no npm package, so the launcher is always `node <plugin>/bin/team.mjs`.
 
 `init` prints a one-line shell function for you to add to your profile (offlimits never edits it):
 
@@ -48,7 +50,8 @@ Run as `team <command>` (or `node <plugin>/bin/team.mjs <command>`). Exit codes:
 
 | Command | Does |
 |---|---|
-| `init [--language xx]` | Merges `offlimits.json` (`defaultRole: worker`, a `team` block), the managed block in `CLAUDE.md` between `<!-- offlimits:team:start -->` and `<!-- offlimits:team:end -->`, `.github/pull_request_template.md` if missing, the `.offlimits/` line in `.gitignore`, and `.offlimits/team/`. Prints what changed and the shell function. Re-running changes only the managed parts. |
+| `start [--print]` | Opens a new terminal in the main checkout that runs `node "<bin>/team.mjs" coordinator`, so the coordinator starts in human context. Runs the same checks as `coordinator` (main checkout, valid `team`, exit 4 while a live coordinator exists). `--print`, `terminal: none` or no usable terminal print the command and a `cd` hint instead. Prints `opened the coordinator in a new terminal; talk to it there`. |
+| `init [--language xx]` | In a folder that is not inside a git repository, runs `git init` first. Merges `offlimits.json` (`defaultRole: worker`, and when absent a `team` block with `language` and `permissionMode: bypassPermissions`), the managed block in `CLAUDE.md` between `<!-- offlimits:team:start -->` and `<!-- offlimits:team:end -->`, `.github/pull_request_template.md` if missing, the `.offlimits/` line in `.gitignore`, and `.offlimits/team/`. Prints what changed and the shell function. Re-running changes only the managed parts. |
 | `coordinator [--resume] [--takeover] [--print]` | Starts `claude --model <models.coordinator> -n coordinator` in the main checkout with the coordinator role. `--resume` adds `--continue`. Refuses (exit 4) while another live coordinator holds `coordinator.json`, unless `--takeover`. `--print` prints the command instead of running it. |
 | `worker <lane> --brief <file> [--model m] [--night] [--base ref] [--print]` | Checks the lane name and `maxWorkers`, creates the worktree and branch `feat/<lane>` from the base, stores the brief, marks the lane `briefed` and opens a terminal running Claude with the worker role. `--night` prepends `mode: night` to the brief. `--print` prints the command instead of opening a terminal. |
 | `board [--json]` | Lists lanes: stage, ahead/behind, dirty, last commit age, delivery, questions, missing worktree. |
@@ -68,12 +71,13 @@ Inside Claude Code the launcher reads `CLAUDECODE` and the session's role. A sub
 | Command | Human terminal | Coordinator | Worker (or subagent) | Solo inside Claude |
 |---|---|---|---|---|
 | `init` | yes | yes | no (the gate says: re-run it from a terminal with `team init`) | yes |
+| `start` | yes | yes | no | yes |
 | `coordinator`, `worker`, `done` | yes | yes | no | no (the gate asks) |
 | `board`, `reserve` | yes | yes | yes | yes |
 | `ask` | yes | yes | yes (own lane) | no (needs a lane) |
 | `stage`, `deliver` | yes | yes | yes (own lane) | no (needs a lane) |
 
-After the first `init`, `defaultRole: worker` makes your own plain `claude` session in the repository a worker, so `/offlimits init` there is denied the second time with "init rewrites team configuration; re-run it from a terminal with: team init". Do exactly that.
+`start` is the one launch command your own session may run: after `init`, `defaultRole: worker` makes your plain `claude` session a worker, and the gate lets a worker that got its role only from `defaultRole` run `start` (an explicit `OFFLIMITS_ROLE=worker` and every subagent are denied). `/offlimits init` there is denied the second time with "init rewrites team configuration; re-run it from a terminal with: team init". Do exactly that.
 
 `stage`, `deliver` and `ask` all need a lane: `OFFLIMITS_LANE` (set for workers), or `--lane` from the coordinator or a human terminal (`ask` takes the lane the same way). Solo sessions have none.
 
