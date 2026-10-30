@@ -242,3 +242,11 @@ test('clean strips keywords and braces in linear time', () => {
   segments(`${'{ '.repeat(30000)}true`);
   assert.ok(performance.now() - t < 500);
 });
+
+test('expandWithState counts PowerShell blocks and nested text against its budget', () => {
+  const blocks = expandWithState(Array.from({ length: 20 }, (_, i) => `& { echo ${i} }`).join('; '), { maxBlockWalks: 10 }, { ps: true });
+  assert.match(blocks.overBudget, /more than 10 script blocks/);
+  const nested = expandWithState(`bash -c "${'x'.repeat(5000)}"`, { maxNestedBytes: 1024 });
+  assert.match(nested.overBudget, /KB of nested commands/);
+  assert.equal(expandWithState('& { echo 1 }; & { echo 2 }', { maxBlockWalks: 10 }, { ps: true }).overBudget, undefined);
+});

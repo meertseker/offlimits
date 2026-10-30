@@ -6,6 +6,7 @@ const OPAQUE_STDIN = `${OPAQUE_PREFIX} shell reads stdin`;
 export const OPAQUE_DEEP = `${OPAQUE_PREFIX} nesting too deep`;
 export const OPAQUE_EVAL = `${OPAQUE_PREFIX} eval of command output`;
 export const OPAQUE_BRACES = `${OPAQUE_PREFIX} unbalanced script block`;
+export const OPAQUE_HASH = `${OPAQUE_PREFIX} unreadable hash table`;
 const MAX_ROUNDS = 8;
 
 /**
@@ -83,6 +84,9 @@ function scan(s, literalBackslash, marks = false, ps = false) {
   let depth = 0; // $( ... ) nesting
   let bt = false; // inside backticks
   let at = 0; // index of the character being read; items record where they end in out.pos
+  let noCommentEnd = false; // no #> after this point: a later <# need not look again
+  let noBraceEnd = false; // no } after this point: a later ${ need not look again
+  const noHereEnd = new Set(); // quote classes whose here-string has no end after this point
   const pos = [];
   out.pos = pos;
   const flush = () => {
@@ -96,7 +100,7 @@ function scan(s, literalBackslash, marks = false, ps = false) {
     at = i;
     const c = s[i];
     if (q === "'") {
-      if (c === "'") q = null;
+      if (c === "'" || (ps && PS_SQ.includes(c))) q = null;
       cur += c;
       continue;
     }
@@ -106,7 +110,7 @@ function scan(s, literalBackslash, marks = false, ps = false) {
         i++;
         continue;
       }
-      if (c === '"') q = null;
+      if (c === '"' || (ps && PS_DQ.includes(c))) q = null;
       cur += c;
       continue;
     }
@@ -115,9 +119,48 @@ function scan(s, literalBackslash, marks = false, ps = false) {
       i++;
       continue;
     }
-    if (c === "'" || c === '"') {
-      q = c;
+    if (ps) {
+      // PowerShell: <# ... #> is a comment, @"<newline> ... <newline>"@ a here-string (both read whole)
+      // ${name} is a variable whatever its name holds (${a<#}); `<# is an escaped <, not a comment
+      if (c === '$' && s[i + 1] === '{' && !noBraceEnd) {
+        let j = i + 2;
+        while (j < s.length && s[j] !== '}') j += s[j] === '`' ? 2 : 1;
+        noBraceEnd = j >= s.length;
+        if (!noBraceEnd) {
+          cur += s.slice(i, j + 1);
+          i = j;
+          continue;
+        }
+      }
+      if (c === '<' && s[i + 1] === '#' && s[i - 1] !== '`' && !noCommentEnd) {
+        const e = s.indexOf('#>', i + 2);
+        noCommentEnd = e === -1;
+        if (e !== -1) {
+          cur += ' ';
+          i = e + 1;
+          continue;
+        }
+      }
+      const hc = c === '@' && (s[i + 2] === '\n' || s[i + 2] === '\r') ? psQuoteClass(s[i + 1]) : null;
+      if (hc && !noHereEnd.has(hc)) {
+        const e = psSkipQuote(s, i + 1);
+        if (e < 0) noHereEnd.add(hc);
+        if (e > 0) {
+          cur += s.slice(i, e);
+          i = e - 1;
+          continue;
+        }
+      }
+    }
+    if (c === "'" || c === '"' || (ps && psQuoteClass(c))) {
+      q = ps && PS_SQ.includes(c) ? "'" : ps && PS_DQ.includes(c) ? '"' : c;
       cur += c;
+      continue;
+    }
+    if (c === '`' && ps) {
+      // PowerShell: a backtick escapes the next character (`; is no separator, `<# no comment)
+      cur += c + (s[i + 1] ?? '');
+      i++;
       continue;
     }
     if (c === '`') {
@@ -177,77 +220,110 @@ function scan(s, literalBackslash, marks = false, ps = false) {
   return out;
 }
 
+// PowerShell treats the curly quotes as quotes too: ‘ ’ ‚ ‛ like ' and “ ” „ like ".
+const PS_SQ = "'‘’‚‛";
+const PS_DQ = '"“”„';
+const psQuoteClass = (c) => (c === undefined ? null : PS_SQ.includes(c) ? PS_SQ : PS_DQ.includes(c) ? PS_DQ : null);
+// Deepest "$( ... ) nesting the PowerShell lexer follows; deeper text is opaque (and the recursion stays far from the stack limit).
+const PS_MAX_NEST = 100;
+const TOO_DEEP = -2;
+
+/**
+ * Skip a PowerShell quoted string starting at s[i] (a quote of either class, or a here-string after @); returns the
+ * index after it, -1 when unclosed, TOO_DEEP past PS_MAX_NEST nested subexpressions.
+ */
+function psSkipQuote(s, i, lvl = 0) {
+  const n = s.length;
+  const cls = psQuoteClass(s[i]);
+  if (s[i - 1] === '@' && (s[i + 1] === '\n' || s[i + 1] === '\r')) {
+    // here-string: ends at a line that starts with a quote of the same class and @
+    for (let j = i + 1; j < n - 2; j++) {
+      if ((s[j] === '\n' || s[j] === '\r') && cls.includes(s[j + 1]) && s[j + 2] === '@') return j + 3;
+    }
+    return -1;
+  }
+  for (let j = i + 1; j < n; j++) {
+    const c = s[j];
+    if (cls === PS_SQ) {
+      if (cls.includes(c)) {
+        if (s[j + 1] !== undefined && cls.includes(s[j + 1])) j++;
+        else return j + 1;
+      }
+      continue;
+    }
+    if (c === '`') j++;
+    else if (cls.includes(c)) {
+      if (s[j + 1] !== undefined && cls.includes(s[j + 1])) j++;
+      else return j + 1;
+    } else if (c === '$' && s[j + 1] === '(') {
+      const e = psSkipCode(s, j + 2, ')', lvl + 1);
+      if (e < 0) return e;
+      j = e - 1;
+    }
+  }
+  return -1;
+}
+
+/** Skip PowerShell code up to the matching close char; returns the index after it, -1, or TOO_DEEP. */
+function psSkipCode(s, i, close, lvl) {
+  if (lvl > PS_MAX_NEST) return TOO_DEEP;
+  const stack = [close];
+  for (let j = i; j < s.length; j++) {
+    const c = s[j];
+    if (c === '`') j++;
+    else if (psQuoteClass(c)) {
+      const e = psSkipQuote(s, j, lvl);
+      if (e < 0) return e;
+      j = e - 1;
+    } else if (c === '(') stack.push(')');
+    else if (c === '{') stack.push('}');
+    else if (c === ')' || c === '}') {
+      if (stack.pop() !== c) return -1;
+      if (!stack.length) return j + 1;
+    }
+  }
+  return -1;
+}
+
+/** Index of the last character of a PowerShell `#` line comment starting at s[i], or -1 when s[i] starts none. */
+function psLineCommentEnd(s, i) {
+  if (s[i] !== '#' || (i > 0 && !/[\s;|&({]/.test(s[i - 1]))) return -1;
+  let j = i;
+  while (j + 1 < s.length && s[j + 1] !== '\n' && s[j + 1] !== '\r') j++;
+  return j;
+}
+
 /**
  * Top-level PowerShell script blocks `{ ... }` and hash tables `@{ ... }` of a command, quote-aware
- * ('...', "..." with backtick escapes and $( ... ) inside, here-strings, ${name}, comments).
- * Returns { blocks: [{ open, body, hash }], bad } where bad means the braces do not balance
- * or a quote is left open. Nested blocks are found again when a body is walked.
+ * ('...', "..." with backtick escapes and $( ... ) inside, curly quotes, here-strings, ${name}, $$, comments).
+ * Returns { blocks: [{ open, body, hash }], bad, deep } where bad means the braces do not balance
+ * or a quote is left open, and deep that subexpressions nest deeper than PS_MAX_NEST.
+ * Nested blocks are found again when a body is walked.
  */
 export function psBlocks(text) {
   const s = String(text ?? '');
   const n = s.length;
   const blocks = [];
   let bad = false;
-  // Skip a quoted string starting at i (s[i] is the quote); returns the index after it, or -1 when unclosed.
-  const skipQuote = (i) => {
-    const q = s[i];
-    if (s[i - 1] === '@' && /[\r\n]/.test(s[i + 1] ?? '')) {
-      // here-string: ends at a line that starts with q@
-      const m = new RegExp('[\\r\\n]' + q + '@').exec(s.slice(i + 1));
-      return m ? i + 1 + m.index + 3 : -1;
-    }
-    for (let j = i + 1; j < n; j++) {
-      const c = s[j];
-      if (q === "'") {
-        if (c === "'") {
-          if (s[j + 1] === "'") j++;
-          else return j + 1;
-        }
-        continue;
-      }
-      if (c === '`') j++;
-      else if (c === '"') {
-        if (s[j + 1] === '"') j++;
-        else return j + 1;
-      } else if (c === '$' && s[j + 1] === '(') {
-        const e = skipCode(j + 2, ')');
-        if (e === -1) return -1;
-        j = e - 1;
-      }
-    }
-    return -1;
-  };
-  // Skip code up to the matching close char; returns the index after it, or -1.
-  const skipCode = (i, close) => {
-    const stack = [close];
-    for (let j = i; j < n; j++) {
-      const c = s[j];
-      if (c === '`') j++;
-      else if (c === "'" || c === '"') {
-        const e = skipQuote(j);
-        if (e === -1) return -1;
-        j = e - 1;
-      } else if (c === '(') stack.push(')');
-      else if (c === '{') stack.push('}');
-      else if (c === ')' || c === '}') {
-        if (stack.pop() !== c) return -1;
-        if (!stack.length) return j + 1;
-      }
-    }
-    return -1;
-  };
+  let deep = false;
   const stack = [];
   for (let i = 0; i < n && !bad; i++) {
     const c = s[i];
     if (c === '`') i++;
-    else if (c === "'" || c === '"') {
-      const e = skipQuote(i);
+    else if (psQuoteClass(c)) {
+      const e = psSkipQuote(s, i);
+      if (e === TOO_DEEP) {
+        deep = bad = true;
+        break;
+      }
       if (e === -1) {
         // an unclosed quote runs to the end; only a brace in or before it makes the blocks unknown
         bad = stack.length > 0 || /[{}]/.test(s.slice(i));
         break;
       }
       i = e - 1;
+    } else if (c === '$' && s[i + 1] === '$') {
+      i++; // $$ is a variable: a { after it opens a script block
     } else if (c === '$' && s[i + 1] === '{') {
       const e = s.indexOf('}', i + 2);
       if (e === -1) bad = true;
@@ -256,9 +332,8 @@ export function psBlocks(text) {
       const e = s.indexOf('#>', i + 2);
       if (e === -1) bad = true;
       else i = e + 1;
-    } else if (c === '#' && (i === 0 || /[\s;|&({]/.test(s[i - 1]))) {
-      const e = s.slice(i).search(/[\r\n]/);
-      i = e === -1 ? n : i + e;
+    } else if (c === '#' && psLineCommentEnd(s, i) !== -1) {
+      i = psLineCommentEnd(s, i);
     } else if (c === '{') stack.push({ open: i, hash: s[i - 1] === '@' });
     else if (c === '}') {
       const b = stack.pop();
@@ -267,11 +342,81 @@ export function psBlocks(text) {
     }
   }
   if (stack.length) bad = true;
-  return { blocks, bad };
+  return { blocks, bad, deep };
 }
 
-// Hash-table entry key (k =, 'k' =, "k" =) and values that are plain literals, not commands.
-const HASH_KEY = /^\s*(?:[\w.-]+|'[^']*'|"[^"]*")\s*=(?!=)\s*/;
+/**
+ * Entries of a PowerShell hash-table body, split at top-level `;` and line ends (outside quotes, comments and
+ * brackets; a line that ends in an operator, comma or pipe, or is followed by a line starting with a pipe, goes on).
+ * Each entry is { key, value } split at its first top-level `=`, or { key: null, value } when it has none.
+ * Returns null when the body cannot be read (a quote or comment left open, nesting too deep).
+ */
+function psHashEntries(body) {
+  const s = String(body);
+  const n = s.length;
+  const entries = [];
+  let text = ''; // the entry so far, comments replaced by a space
+  let from = 0; // start of the part of the entry not yet copied into text
+  let eq = -1; // index of the entry's first top-level = in text
+  let depth = 0;
+  let last = ''; // last character of the entry outside comments and whitespace
+  const end = (i) => {
+    text += s.slice(from, i);
+    if (text.trim()) entries.push(eq === -1 ? { key: null, value: text.trim() } : { key: text.slice(0, eq).trim(), value: text.slice(eq + 1).trim() });
+    text = '';
+    from = i + 1;
+    eq = -1;
+    last = '';
+  };
+  for (let i = 0; i < n; i++) {
+    const c = s[i];
+    if (c === '`') {
+      i++;
+      last = c;
+      continue;
+    }
+    if (psQuoteClass(c)) {
+      const e = psSkipQuote(s, i);
+      if (e < 0) return null;
+      i = e - 1;
+      last = c;
+      continue;
+    }
+    if (c === '<' && s[i + 1] === '#') {
+      const e = s.indexOf('#>', i + 2);
+      if (e === -1) return null;
+      text += `${s.slice(from, i)} `;
+      from = e + 2;
+      i = e + 1;
+      continue;
+    }
+    if (c === '#' && psLineCommentEnd(s, i) !== -1) {
+      const e = psLineCommentEnd(s, i);
+      text += `${s.slice(from, i)} `;
+      from = e + 1;
+      i = e;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (--depth < 0) return null;
+    } else if (depth === 0 && c === '=' && eq === -1 && s[i + 1] !== '=') eq = text.length + (i - from);
+    else if (depth === 0 && (c === ';' || c === '\n' || c === '\r')) {
+      let j = i + 1;
+      while (j < n && (s[j] === ' ' || s[j] === '\t')) j++;
+      if (c !== ';' && (/[|,=+\-*/%]/.test(last) || s[j] === '|')) continue;
+      end(i);
+      continue;
+    }
+    if (!/\s/.test(c)) last = c;
+  }
+  end(n);
+  return entries;
+}
+
+// Hash-table keys that are plain words or quoted literals (nothing evaluated), and values that are plain literals.
+const PS_SIMPLE_KEY = /^(?:[\w.-]+|'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*")$/;
+const PS_HASH_KEY = /^\s*(?:[\w.-]+|'(?:[^']|'')*'|"(?:[^"`]|`.|"")*")\s*=(?!=)\s*/;
 const PS_LITERAL = /^(?:'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*"|[-+]?\d[\w.]*|\$(?:true|false|null))$/i;
 
 // Leading shell keywords / grouping tokens that are not part of the command itself.
@@ -375,7 +520,7 @@ export function tokenize(segment, mode = 'default') {
     const c = s[i];
     if (start === -1 && !/\s/.test(c)) start = i;
     if (q === "'") {
-      if (c === "'") q = null;
+      if (c === "'" || (ps && PS_SQ.includes(c))) q = null;
       else cur += c;
       continue;
     }
@@ -395,7 +540,7 @@ export function tokenize(segment, mode = 'default') {
       } else if (!ps && c === '\\' && '"\\$`'.includes(s[i + 1] ?? '\0')) {
         cur += s[i + 1];
         i++;
-      } else if (c === '"') q = null;
+      } else if (c === '"' || (ps && PS_DQ.includes(c))) q = null;
       else cur += c;
       continue;
     }
@@ -420,8 +565,8 @@ export function tokenize(segment, mode = 'default') {
       q = 'ansi';
       has = true;
       i++;
-    } else if (c === "'" || c === '"') {
-      q = c;
+    } else if (c === "'" || c === '"' || (ps && psQuoteClass(c))) {
+      q = ps && PS_SQ.includes(c) ? "'" : ps && PS_DQ.includes(c) ? '"' : c;
       has = true;
     } else if (c === '\\' && mode === 'bash' && i + 1 < s.length) {
       if (s[i + 1] !== '\n') cur += s[i + 1];
@@ -496,13 +641,15 @@ export function stripAssignments(segment) {
 }
 
 /** Bodies of $(...) and `...` found outside single quotes (outermost only); out.ticks holds the indexes of backtick bodies. */
-function substitutions(s) {
+function substitutions(s, ps = false) {
+  // with ps the curly quotes count as quotes
+  const norm = (c) => (!ps || c === undefined ? c : PS_SQ.includes(c) ? "'" : PS_DQ.includes(c) ? '"' : c);
   const out = [];
   const ticks = new Set();
   out.ticks = ticks;
   let q = null;
   for (let i = 0; i < s.length; i++) {
-    const c = s[i];
+    const c = norm(s[i]);
     if (q === "'") {
       if (c === "'") q = null;
       continue;
@@ -520,7 +667,7 @@ function substitutions(s) {
       let j = i + 2;
       let iq = null;
       for (; j < s.length && depth > 0; j++) {
-        const d = s[j];
+        const d = norm(s[j]);
         if (iq) {
           if (d === '\\' && iq === '"') j++;
           else if (d === iq) iq = null;
@@ -848,11 +995,63 @@ function protectSemicolons(s) {
   return out;
 }
 
+const CMD_IF_UNARY = new Set(['exist', 'defined', 'errorlevel', 'cmdextversion']);
+const CMD_IF_OPS = new Set(['==', 'equ', 'neq', 'lss', 'leq', 'gtr', 'geq']);
+
+/** The text after a cmd `if` condition: `if [/i] [not] (exist x | defined x | errorlevel n | a==b | a op b)`. */
+function skipCmdIf(text) {
+  let p = text;
+  const word = () => {
+    p = p.trimStart();
+    const [w, next] = readWord(p, 0, false);
+    return { w, low: w.toLowerCase(), next };
+  };
+  // the text after the next word
+  const rest = () => {
+    const { next } = word();
+    return p.slice(next);
+  };
+  let x = word();
+  if (x.low === '/i') { p = p.slice(x.next); x = word(); }
+  if (x.low === 'not') { p = p.slice(x.next); x = word(); }
+  if (CMD_IF_UNARY.has(x.low)) {
+    p = p.slice(x.next);
+    return rest();
+  }
+  // comparison: a==b in one word, or a == b, a== b, a ==b, a EQU b
+  p = p.slice(x.next);
+  if (x.w.includes('==') && !x.w.endsWith('==')) return p;
+  if (x.w.endsWith('==')) return rest();
+  const op = word();
+  if (CMD_IF_OPS.has(op.low)) {
+    p = p.slice(op.next);
+    return rest();
+  }
+  if (op.w.startsWith('==')) {
+    p = p.slice(op.next);
+    return op.w === '==' ? rest() : p;
+  }
+  return p;
+}
+
+/** The command after `cmd [/switches] /c|/k`, or null when cmd has no /c or /k (an interactive shell). */
+function cmdSwitchBody(text) {
+  let p = text;
+  for (;;) {
+    p = p.trimStart();
+    const [w, next] = readWord(p, 0, false);
+    if (!w.startsWith('/')) return null;
+    if (/^\/[ck]/i.test(w)) return `${w.slice(2)}${p.slice(next)}`;
+    p = p.slice(next);
+  }
+}
+
 /**
- * wt commands anywhere in a cmd body: cmd runs each command between &, &&, ||, |, and parentheses (^ escapes), after an
- * optional @ and `start ["title"] [/switches]`. Each one starting with wt comes back as `wt ...` with its ';' kept for wt.
+ * Extra bodies of a cmd body: cmd runs each command between &, &&, ||, |, and parentheses (^ escapes), after lead-ins
+ * such as @, `start ["title"] [/switches]`, call, if <condition>, else, for ... do and cmd /c|/k. A command that had lead-ins
+ * comes back without them; one starting with wt comes back as `wt ...` with its ';' kept for wt.
  */
-function cmdWtBodies(body) {
+function cmdBodies(body) {
   const parts = [];
   let cur = '';
   let q = false;
@@ -867,21 +1066,42 @@ function cmdWtBodies(body) {
   const out = [];
   const isWt = (w) => baseName(w.replace(/"/g, '')) === 'wt';
   for (const part of parts) {
-    let p = part.replace(/^[\s@]+/, '');
-    let [w, next] = readWord(p, 0, true);
-    if (/^"?start"?$/i.test(w)) {
-      p = p.slice(next);
-      for (;;) {
-        p = p.trimStart();
-        [w, next] = readWord(p, 0, true);
-        if (!w || isWt(w)) break;
-        const low = w.toLowerCase();
-        if (w.startsWith('"') || CMD_START_SWITCH.has(low)) { p = p.slice(next); continue; }
-        if (CMD_START_VALUE.has(low)) { p = p.slice(next).trimStart(); p = p.slice(readWord(p, 0, true)[1]); continue; }
-        break;
+    let p = part;
+    let w;
+    let next;
+    // lead-ins that still run the command after them: @, start ..., call, if <condition>, else, for ... do, cmd /c|/k
+    for (let guard = 0; guard < 64; guard++) {
+      p = p.replace(/^[\s@]+/, '');
+      [w, next] = readWord(p, 0, true);
+      const low = w.replace(/"/g, '').toLowerCase();
+      if (low === 'start') {
+        p = p.slice(next);
+        for (;;) {
+          p = p.trimStart();
+          [w, next] = readWord(p, 0, true);
+          if (!w || isWt(w)) break;
+          const lw = w.toLowerCase();
+          if (w.startsWith('"') || CMD_START_SWITCH.has(lw)) { p = p.slice(next); continue; }
+          if (CMD_START_VALUE.has(lw)) { p = p.slice(next).trimStart(); p = p.slice(readWord(p, 0, true)[1]); continue; }
+          break;
+        }
+        continue;
       }
+      if (low === 'call' || low === 'else' || low === 'do') { p = p.slice(next); continue; }
+      if (low === 'if') { p = skipCmdIf(p.slice(next)); continue; }
+      if (baseName(low) === 'cmd') {
+        const body2 = cmdSwitchBody(p.slice(next));
+        if (body2 === null) break;
+        p = body2;
+        continue;
+      }
+      break;
     }
-    if (!w || !isWt(w)) continue;
+    if (!w || !isWt(w)) {
+      // the command after the lead-ins (cmd /c "if 1==1 git push origin main", "call git push", "@git push")
+      if (p.trim() && p.trim() !== part.trim()) out.push(p.trim());
+      continue;
+    }
     const rest = p.slice(next);
     if (rest.includes(';')) out.push(`wt ${protectSemicolons(rest)}`);
   }
@@ -1096,9 +1316,10 @@ function wrapperInfo(segment) {
     if (k === -1) return done([], false);
     const first = args[k].slice(2); // e.g. /c"git push" tokenises to "/cgit push"
     const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ');
-    // cmd has no ';' separator, but wt does: every wt command in the body is also checked with its ';' kept for wt.
+    // cmd has no ';' separator, but wt does: every wt command in the body is also checked with its ';' kept for wt,
+    // and every command after cmd lead-ins (if, call, @ ...) is checked without them (see cmdBodies).
     // The body itself keeps every ';' where it is, so a nested shell body is still split by the checks that follow.
-    return done(body ? [body, ...cmdWtBodies(body)] : [], false, false, false);
+    return done(body ? [body, ...cmdBodies(body)] : [], false, false, false);
   }
   return done([], false);
 }
@@ -1243,11 +1464,11 @@ function nextState(seg, st, w) {
  * after an absolute cd, '~'-prefixed after `cd ~`, null when unknown, for example after
  * `cd -`, `popd` or `cd $X`) and `envs` (variables assigned by `export X=`, `X=...;`,
  * `$env:X=`, `set X=` and PowerShell `$x =`). Parenthesised subshells restore the state.
- * With `budget` ({maxSegments, maxVars}) the walk stops once a limit is passed and the
- * returned array carries `overBudget` (a short reason).
+ * With `budget` ({maxSegments, maxVars, maxBlockWalks, maxNestedBytes}) the walk stops once a limit is passed
+ * (or the nesting overflows the stack) and the returned array carries `overBudget` (a short reason).
  * The `envs` objects are frozen and shared between segments; copy before changing them.
  * @param {string} command
- * @param {{maxSegments?: number, maxVars?: number}} [budget]
+ * @param {{maxSegments?: number, maxVars?: number, maxBlockWalks?: number, maxNestedBytes?: number}} [budget]
  * @returns {Array<{segment: string, cwd: string | null, envs: Readonly<Record<string, string>>}> & {overBudget?: string}}
  */
 export function expandWithState(command, budget = {}, { ps = false } = {}) {
@@ -1255,10 +1476,22 @@ export function expandWithState(command, budget = {}, { ps = false } = {}) {
   const seen = new Set();
   const ids = new Map();
   const maxSegments = budget.maxSegments ?? Infinity;
+  const maxBlockWalks = budget.maxBlockWalks ?? Infinity;
+  const maxNestedBytes = budget.maxNestedBytes ?? Infinity;
   const OVER = Symbol('over');
   let overReason = null;
+  let blockWalks = 0;
+  let nestedBytes = 0;
   const w = {
     maxVars: budget.maxVars ?? Infinity,
+    // every PowerShell script block or hash table walked, and every character of nested text walked, counts
+    block: () => {
+      if (++blockWalks > maxBlockWalks) throw w.over(`more than ${maxBlockWalks} script blocks`);
+    },
+    spend: (n) => {
+      nestedBytes += n;
+      if (nestedBytes > maxNestedBytes) throw w.over(`more than ${Math.round(maxNestedBytes / 1024)} KB of nested commands`);
+    },
     // equal derivations (same parent state, same changes) share an id, so both scan passes dedup
     intern: (k) => {
       let id = ids.get(k);
@@ -1281,7 +1514,9 @@ export function expandWithState(command, budget = {}, { ps = false } = {}) {
   try {
     walk(String(command ?? ''), { cwd: '.', envs: Object.freeze({}), id: 0 }, 0, w, ps);
   } catch (err) {
-    if (err !== OVER) throw err;
+    // a stack overflow on some nesting nobody foresaw is opaque too: the caller must get an answer, not a throw
+    if (err instanceof RangeError && /call stack/i.test(err.message)) overReason = 'nesting too deep to read';
+    else if (err !== OVER) throw err;
     out.overBudget = overReason;
   }
   return out;
@@ -1290,11 +1525,20 @@ export function expandWithState(command, budget = {}, { ps = false } = {}) {
 // tick: text is a backtick body; in PowerShell a backtick is an escape, so braces there need not balance
 function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
   const { emit } = w;
+  if (depth > 0) w.spend(text.length);
+  if (hash === true) {
+    walkHash(text, state0, depth, w);
+    return;
+  }
   const passes = [scan(text, false, true, ps)];
   if (text.includes('\\')) passes.push(scan(text, true, true, ps));
   // PowerShell script blocks and hash tables: their bodies are commands too (the outer text is still checked)
-  const blk = ps ? psBlocks(text) : { blocks: [], bad: false };
-  if (blk.bad && !tick) emit(OPAQUE_BRACES, state0);
+  const blk = ps ? psBlocks(text) : { blocks: [], bad: false, deep: false };
+  if (blk.deep) emit(OPAQUE_DEEP, state0);
+  else if (blk.bad && !tick) emit(OPAQUE_BRACES, state0);
+  // Each block is walked once per state it is reached with: both scan passes reach the same blocks, and walking
+  // them again in the second pass would double the work at every nesting level.
+  const walked = new Set();
   for (const items of passes) {
     let st = state0;
     const stack = [];
@@ -1303,8 +1547,14 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
       for (; bi < blk.blocks.length && blk.blocks[bi].open < end; bi++) {
         const b = blk.blocks[bi];
         if (!b.body.trim()) continue;
+        const key = `${bi}\0${st.cwd}\0${st.id}`;
+        if (walked.has(key)) continue;
+        walked.add(key);
         if (depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
-        else walk(b.body, st, depth + 1, w, true, b.hash);
+        else {
+          w.block();
+          walk(b.body, st, depth + 1, w, true, b.hash);
+        }
       }
     };
     for (let k = 0; k < items.length; k++) {
@@ -1320,15 +1570,16 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
       }
       // PowerShell: `$p = git push`, `[void](...)`, `. git push` run the command after the lead-in
       let raw = clean(it);
-      if (hash) {
-        raw = raw.replace(HASH_KEY, '').trim();
+      if (hash === 'items') {
+        // a hash-table body that cannot be split into entries: drop a leading key = from every item
+        raw = raw.replace(PS_HASH_KEY, '').trim();
         if (PS_LITERAL.test(raw)) continue;
       }
       const seg = ps ? psLead(raw) : raw;
       if (!seg) continue;
       if (emit(seg, st) && !seg.startsWith(OPAQUE_PREFIX)) {
         const info = wrapperInfo(seg);
-        const bodies = [...info.bodies, ...substitutions(seg).map((b, k, all) => ({ text: b, tick: all.ticks.has(k) }))];
+        const bodies = [...info.bodies, ...substitutions(seg, ps).map((b, k, all) => ({ text: b, tick: all.ticks.has(k) }))];
         if (bodies.length && depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
         else {
           for (const b of bodies) {
@@ -1344,5 +1595,29 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
       if (seg !== raw) st = nextState(seg, st, w);
     }
     blocksBefore(Infinity);
+  }
+}
+
+/**
+ * A PowerShell hash-table body: every value that is not a plain literal is a command, and so is every key that is not
+ * a plain word or quoted literal (`(git push origin main) = 1`). An entry without a top-level `=`, or a body that cannot
+ * be split into entries, is checked as a command and is also opaque.
+ */
+function walkHash(text, st, depth, w) {
+  const entries = psHashEntries(text);
+  if (!entries) {
+    walk(text, st, depth, w, true, 'items');
+    w.emit(OPAQUE_HASH, st);
+    return;
+  }
+  for (const { key, value } of entries) {
+    if (key === null) {
+      walk(value, st, depth, w, true);
+      // one word without = (stash@{0}, @{u}) is a string or a parse error, never a command line
+      if (/\s/.test(value)) w.emit(OPAQUE_HASH, st);
+      continue;
+    }
+    if (!PS_SIMPLE_KEY.test(key)) walk(key, st, depth, w, true);
+    if (value && !PS_LITERAL.test(value)) walk(value, st, depth, w, true);
   }
 }

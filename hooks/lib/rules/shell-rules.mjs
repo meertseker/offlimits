@@ -3,7 +3,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { stripAssignments, tokenize, tokens, baseName, flagValue, skipWrapperArgs, WRAPPERS, OPAQUE_PREFIX, OPAQUE_DEEP, OPAQUE_EVAL, OPAQUE_BRACES } from '../shell.mjs';
+import { stripAssignments, tokenize, tokens, baseName, flagValue, skipWrapperArgs, WRAPPERS, OPAQUE_PREFIX, OPAQUE_DEEP, OPAQUE_EVAL, OPAQUE_BRACES, OPAQUE_HASH } from '../shell.mjs';
 import { globMatch } from '../paths.mjs';
 
 const base = baseName;
@@ -1050,12 +1050,14 @@ export function checkSegment(segment, ctx) {
       action: ctx.role === 'solo' ? 'ask' : 'deny',
       rule: 'opaque-shell',
       reason: rest === OPAQUE_DEEP
-        ? 'Command nests shells more than 8 levels deep, cannot inspect the innermost commands.'
+        ? 'Command nests shells more than 8 levels (or PowerShell subexpressions more than 100) deep, cannot inspect the innermost commands.'
         : rest === OPAQUE_EVAL
           ? 'Command evaluates text produced at run time (eval of a substitution), cannot inspect it.'
           : rest === OPAQUE_BRACES
             ? 'PowerShell script block or hash table braces do not balance, cannot inspect the commands inside.'
-            : 'Shell reads its commands from stdin, cannot inspect them.',
+            : rest === OPAQUE_HASH
+              ? 'PowerShell hash table entry has no readable key = value form, cannot tell which part runs.'
+              : 'Shell reads its commands from stdin, cannot inspect them.',
     };
   }
   const env0 = { ...(ctx.segEnvs ?? {}), ...kvObject(assignments) };
