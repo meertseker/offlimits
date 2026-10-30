@@ -1,0 +1,117 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  teamDir, ensureTeamDir, withLock, readBoard, writeBoard, updateLane, reserve, STAGES,
+} from '../hooks/lib/team/state.mjs';
+
+const STATE_URL = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'lib', 'team', 'state.mjs')).href;
+const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-team-')));
+const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+test('STAGES lists the lifecycle', () => {
+  assert.equal(STAGES[0], 'briefed');
+  assert.equal(STAGES.length, 7);
+});
+
+test('updateLane creates and merges', () => {
+  const d = tmp();
+  ensureTeamDir(d);
+  assert.ok(fs.existsSync(path.join(d, 'briefs')) && fs.existsSync(path.join(d, 'deliveries')) && fs.existsSync(path.join(d, 'questions')));
+  const a = updateLane(d, 'auth', { stage: 'briefed', branch: 'lane/auth' });
+  const b = updateLane(d, 'auth', { note: 'hello' });
+  assert.equal(b.createdAt, a.createdAt);
+  assert.ok(b.updatedAt >= b.createdAt);
+  assert.equal(b.note, 'hello');
+  assert.equal(b.stage, 'briefed');
+  assert.equal(readBoard(d).lanes.auth.note, 'hello');
+});
+
+test('updateLane rejects unknown stage', () => {
+  const d = tmp();
+  assert.throws(() => updateLane(d, 'x', { stage: 'shipping' }), /unknown stage/);
+});
+
+test('readBoard tolerates missing and corrupt files', () => {
+  const d = tmp();
+  assert.deepEqual(readBoard(d), { lanes: {} });
+  fs.writeFileSync(path.join(d, 'board.json'), '{nope');
+  assert.deepEqual(readBoard(d), { lanes: {} });
+});
+
+test('writeBoard is atomic', () => {
+  const d = tmp();
+  writeBoard(d, { lanes: { a: { stage: 'briefed' } } });
+  assert.ok(!fs.existsSync(path.join(d, 'board.json.tmp')));
+  assert.equal(readBoard(d).lanes.a.stage, 'briefed');
+});
+
+test('stale lock is broken', () => {
+  const d = tmp();
+  const lock = path.join(d, 'lock');
+  fs.writeFileSync(lock, '');
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(lock, old, old);
+  const t = Date.now();
+  assert.equal(withLock(d, () => 42), 42);
+  assert.ok(Date.now() - t < 500);
+  assert.ok(!fs.existsSync(lock));
+});
+
+test('live lock times out', () => {
+  const d = tmp();
+  fs.writeFileSync(path.join(d, 'lock'), '');
+  assert.throws(() => withLock(d, () => 1, { timeoutMs: 100 }), /locked/);
+  assert.ok(fs.existsSync(path.join(d, 'lock')));
+});
+
+test('lock is released when fn throws', () => {
+  const d = tmp();
+  assert.throws(() => withLock(d, () => { throw new Error('boom'); }), /boom/);
+  assert.ok(!fs.existsSync(path.join(d, 'lock')));
+});
+
+test('reserve pads and increments', () => {
+  const d = tmp();
+  assert.equal(reserve(d, 'migration', { floor: 12 }), '0013');
+  assert.equal(reserve(d, 'migration', { lane: 'auth' }), '0014');
+  const r = JSON.parse(fs.readFileSync(path.join(d, 'reservations.json'), 'utf8'));
+  assert.equal(r.migration.last, 14);
+  assert.equal(r.migration.history[1].lane, 'auth');
+});
+
+test('reserve is safe across processes', async () => {
+  const d = tmp();
+  const code = `import(${JSON.stringify(STATE_URL)}).then(m=>{const o=[];for(let i=0;i<20;i++)o.push(m.reserve(${JSON.stringify(d)},'k',{}));console.log(o.join(','))})`;
+  const run = () => new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    c.stdout.on('data', (b) => { out += b; });
+    c.on('close', (n) => (n === 0 ? resolve(out.trim()) : reject(new Error('child exit ' + n))));
+  });
+  const outs = await Promise.all([run(), run()]);
+  const all = outs.flatMap((o) => o.split(','));
+  assert.equal(new Set(all).size, 40);
+  assert.deepEqual([...all].sort(), Array.from({ length: 40 }, (_, i) => String(i + 1).padStart(4, '0')));
+});
+
+test('teamDir from a worktree points to the main checkout', () => {
+  const base = tmp();
+  const main = path.join(base, 'main');
+  fs.mkdirSync(main);
+  git(main, '-c', 'init.defaultBranch=main', 'init');
+  git(main, 'config', 'user.name', 't');
+  git(main, 'config', 'user.email', 't@example.com');
+  fs.writeFileSync(path.join(main, 'a.txt'), 'a');
+  git(main, 'add', '.');
+  git(main, 'commit', '-m', 'init');
+  const wt = path.join(base, 'x-lane');
+  git(main, 'worktree', 'add', wt, '-b', 'lane/x');
+  assert.equal(teamDir(wt), teamDir(main));
+  assert.equal(teamDir(main), path.join(main, '.offlimits', 'team'));
+  assert.equal(teamDir(''), null);
+});
