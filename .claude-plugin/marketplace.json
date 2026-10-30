@@ -1,12 +1,14 @@
 {
   "name": "offlimits",
-  "description": "Off Limits: a zero-dependency hook that keeps coding agents out of production.",
-  "owner": { "name": "Mert Seker" },
+  "description": "Off Limits: turn Claude Code into a software team, with a zero-dependency gate that keeps agents out of production.",
+  "owner": {
+    "name": "Mert Seker"
+  },
   "plugins": [
     {
       "name": "offlimits",
       "source": "./",
-      "description": "The hook that keeps your coding agent out of production: blocks pushes to protected branches, remote migrations, deploys and prod MCP writes, in every permission mode."
+      "description": "Turn Claude Code into a software team: one coordinator you talk to, workers in their own worktrees, and a gate that keeps everyone but the coordinator out of production, in every permission mode."
     }
   ]
 }

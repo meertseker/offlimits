@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 
 const read = (p) => JSON.parse(readFileSync(new URL(`../${p}`, import.meta.url), 'utf8'));
 const plugin = read('.claude-plugin/plugin.json');
@@ -47,4 +47,18 @@ test('example policy holds spec defaults and a filled production block', () => {
   assert.deepEqual(example.trustedAgentTypes, []);
   assert.equal(example.roleEnv, 'OFFLIMITS_ROLE');
   assert.equal(example.onError, 'auto');
+});
+
+test('every skill has name and description frontmatter, name equals its folder', () => {
+  const dirs = readdirSync(new URL('../skills/', import.meta.url), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  for (const want of ['offlimits', 'offlimits-roles', 'offlimits-coordinator', 'offlimits-worker']) assert.ok(dirs.includes(want), `skills/${want} missing`);
+  for (const dir of dirs) {
+    const text = readFileSync(new URL(`../skills/${dir}/SKILL.md`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+    const m = /^---\n([\s\S]*?)\n---\n/.exec(text);
+    assert.ok(m, `${dir}: frontmatter present`);
+    const fm = Object.fromEntries(m[1].split('\n').map((l) => /^([a-z-]+):\s*(.+)$/.exec(l)).filter(Boolean).map((kv) => [kv[1], kv[2].trim()]));
+    assert.equal(fm.name, dir, `${dir}: name equals folder`);
+    assert.ok(fm.description && fm.description.length > 40, `${dir}: description present`);
+    assert.ok(text.split('\n').length < 150, `${dir}: under 150 lines`);
+  }
 });

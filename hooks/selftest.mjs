@@ -74,6 +74,7 @@ function main(base) {
       hook_event_name: 'PreToolUse',
       tool_name: c.tool_name,
       tool_input: c.tool_input,
+      ...(c.agent_id ? { agent_id: c.agent_id } : {}),
     });
     const r = spawnSync(process.execPath, [GATE], { input: stdin, env, cwd: dir, encoding: 'utf8', timeout: 10000 });
     if (r.error) return `error ${r.error.code ?? r.error.message}`;

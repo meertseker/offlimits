@@ -23,6 +23,8 @@ export const DEFAULT_POLICY = Object.freeze({
     '.claude/hooks/**',
     'offlimits.json',
     '.github/workflows/**',
+    '.offlimits/team/board.json',
+    '.offlimits/team/coordinator.json',
   ],
   production: { mcpServers: [], projectRefs: [], hosts: [] },
   extraDeny: [],
@@ -153,6 +155,8 @@ export function loadPolicy(root, readFile = fs.readFileSync) {
           }
         }
         break;
+      case 'team':
+        break; // validated by loadTeam (hooks/lib/team/config.mjs), never by the gate
       default:
         problems.push(`offlimits.json: unknown key "${key}"`);
     }

@@ -38,6 +38,16 @@ For a boundary that holds against a determined agent, give it credentials that c
 - **Switching away from a protected branch and pushing in one command.** On `main`, `git checkout feat/x && git push` is still denied: the hook checks the branch the session is on as well as the one the command switches to. Run the two steps as separate commands.
 - **Heredoc bodies are scanned.** The hook does not know where a heredoc ends, so its lines are checked as commands. `cat > notes.md <<EOF` followed by a line `git push origin main` is denied even though nothing is pushed. Write such files with the file tools instead.
 
+## Team mode
+
+- **`team board worker`-style false positive.** For a worker, the `team-launch` rule looks for `worker`, `done`, `coordinator` or `init` among all arguments after `team`, not only the first one. A worker running `team board worker`, or `team stage building done` with an extra word, is denied although those commands are harmless. Rephrase the question or hand over to the coordinator.
+- **The launcher relies on `CLAUDECODE` and the gate rule.** The CLI refuses privileged commands inside Claude Code unless the role is coordinator; a subagent of the coordinator inherits that role, so the second layer is the `team-launch` rule, which resolves subagents to worker. A worker could run a different launcher of its own (a script that calls `git worktree` and `claude`); starting the agent is still blocked by `agent-spawn`, but anything that is not an agent CLI is outside the rule.
+- **Importing the CLI through an inline interpreter.** A coordinator's subagent that deliberately runs `node -e "import('.../hooks/lib/team/cli.mjs')..."` inherits the coordinator role, so the CLI's own check passes, and the `team-launch` rule sees an interpreter call, not `team`. Both layers pass. This is the same class as the inline-interpreter limit above; an `extraDeny` pattern for `node -e` closes it.
+- **The lock is advisory and file-based.** `.offlimits/team/lock` protects the launcher's own writes. A process that edits `board.json` or `reservations.json` directly ignores it, and on a network or synced folder file locks can behave differently.
+- **Terminals.** `terminal: auto` uses Windows Terminal (`wt`) on Windows and falls back to `cmd /c start` with PowerShell when `wt` is missing; Terminal.app on macOS; on Linux `x-terminal-emulator`, `gnome-terminal` or `konsole`, in that order. Only when nothing fits (or the paths cannot be carried safely by the chosen terminal) does the launcher print the exact command for a human to run, which matters in night mode.
+- **Repository and brief paths are allowlisted.** The worker's terminal command can only carry letters, digits, space and these characters: `.` `,` `:` `\` `/` `_` `(` `)` `-`. Any other character in the repository or brief path is refused, including `~ + & ' @ # [ ] = %` and `"`, and `team worker` stops with an error until the repository lives at a path without them.
+- **Squash merges.** `team done` checks git ancestry, so a squash-merged lane looks unmerged and needs `--abandon`.
+
 ## Platform notes
 
 - The hook needs Node 20 or newer on the PATH of the machine running Claude Code.

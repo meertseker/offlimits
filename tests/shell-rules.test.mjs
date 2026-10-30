@@ -164,3 +164,12 @@ test('protectedBranches globs are matched case-sensitively and per path segment'
   assert.equal(checkSegment('git push origin Release/1.0', c), null);
   assert.equal(checkSegment('git push origin release/1.0/x', c), null);
 });
+
+test('team-launch gives init its own reason', () => {
+  const d = checkSegment('team init', ctx({ role: 'worker' }));
+  assert.equal(d.rule, 'team-launch');
+  assert.equal(d.action, 'deny');
+  assert.match(d.reason, /init rewrites team configuration; re-run it from a terminal with: team init/);
+  assert.doesNotMatch(d.reason, /start or remove team sessions/);
+  assert.match(checkSegment('team worker x', ctx({ role: 'worker' })).reason, /would start or remove team sessions/);
+});

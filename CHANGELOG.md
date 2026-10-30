@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.0 - 2026-10-30
+
+Repositioned: offlimits now turns Claude Code into a software team (one coordinator, workers in their own worktrees) and keeps the gate that holds it together.
+
+Breaking:
+
+- `scripts/worker.ps1` and `scripts/coordinator.ps1` are removed: they started sessions under names the `team-launch` rule did not know. Use `team worker <lane> --brief <file>` and `team coordinator` (or `node bin/team.mjs ...`).
+
+Added:
+
+- Team mode: `bin/team.mjs` (also `offlimits-team`, or `team` once the shell function from `init` is in your profile) with `init`, `coordinator`, `worker`, `board`, `stage`, `deliver`, `ask`, `reserve` and `done`, and exit codes 0 to 4.
+- `init` writes `offlimits.json` (`defaultRole: worker`, a `team` block), a managed block in `CLAUDE.md`, a PR template and a `.gitignore` entry, and prints a `team` shell function. Safe to re-run.
+- The `team` block in `offlimits.json`: `language`, `models`, `maxWorkers`, `base`, `worktreeDir`, `checks`, `deploy`, `rules`, `reservations`, `terminal`, `permissionMode`, validated without ever weakening the gate.
+- `team.permissionMode` (`default`, `acceptEdits` or `bypassPermissions`): passed as `--permission-mode` to the coordinator and worker sessions. Unattended and night workers need `acceptEdits` or `bypassPermissions`, or they stall on the first permission prompt; the gate keeps that safe.
+- Team state in `.offlimits/team/` (board, coordinator lock, reservations, briefs, deliveries, questions) under a file lock with timestamped tokens and a breaker lock.
+- Workers in new terminals (Windows Terminal, Terminal.app, `x-terminal-emulator`, or a printed command), each in a git worktree on `feat/<lane>`, with role, lane and model set by the launcher.
+- Atomic reservations such as migration numbers: `team reserve <key>`.
+- `done` refuses dirty lanes, lanes with no commits and lanes not merged by ancestry unless `--abandon`.
+- Night mode: lanes launch with `--night` and `approval: none`; nothing is merged or deployed without an explicit go.
+- A team section in the SessionStart banner (role, lane, board, and the exact `team` command with the plugin path), and `/offlimits init`, `board` and `team`.
+- Skills `offlimits-coordinator` and `offlimits-worker`, and templates for briefs, deliveries and the PR description.
+- `team-launch`: a worker or subagent is denied `team worker|done|coordinator|init` (also via `node bin/team.mjs`, `offlimits-team`, `npx`); solo asks for worker, done and coordinator.
+- `docs/team.md`, and team-mode entries in `docs/limits.md`.
+
 ## 0.2.0 - 2026-10-26
 
 Added:

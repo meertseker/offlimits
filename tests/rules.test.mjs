@@ -47,7 +47,7 @@ for (const c of cases) {
   test(`fixture (${c.file}): ${c.name}`, () => {
     const policy = mergePolicy(c.policy);
     // Same resolution as the gate: a fixture role "solo" means no env variable, so defaultRole applies.
-    const role = resolveRole(null, c.role && c.role !== 'solo' ? { [policy.roleEnv]: c.role } : {}, policy);
+    const role = resolveRole(c.agent_id ? { agent_id: c.agent_id } : null, c.role && c.role !== 'solo' ? { [policy.roleEnv]: c.role } : {}, policy);
     const ctx = {
       role,
       policy,
@@ -55,7 +55,7 @@ for (const c of cases) {
       cwd: '/repo',
       repoRoot: '/repo',
     };
-    const d = decide({ tool_name: c.tool_name, tool_input: c.tool_input }, ctx);
+    const d = decide({ tool_name: c.tool_name, tool_input: c.tool_input, ...(c.agent_id ? { agent_id: c.agent_id } : {}) }, ctx);
     assert.equal(d.action, c.expect, JSON.stringify(d));
     if (c.rule) assert.equal(d.rule, c.rule);
     if (c.expect !== 'allow') {

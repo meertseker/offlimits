@@ -8,7 +8,7 @@ Product design: `docs/superpowers/specs/2026-10-25-offlimits-design.md`.
 - `OFFLIMITS_ROLE=coordinator` merges, tags and releases. One coordinator per repo.
 - Everyone else is a worker: work on `feat/<lane>` in `../offlimits-<lane>`.
 - Open a draft PR on your first commit. Never push `main`.
-- Start workers with `scripts/worker.ps1 -Lane <name>`, the coordinator with `scripts/coordinator.ps1`.
+- Start workers with `node bin/team.mjs worker <lane> --brief <file>` (`team worker <lane> --brief <file>` with the shell function), the coordinator with `node bin/team.mjs coordinator` (`team coordinator`).
 - If the gate blocks you, hand over to the coordinator. Do not work around it.
 - Never set or export `OFFLIMITS_ROLE` yourself.
 

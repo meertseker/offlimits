@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
-const RULES = ['git-push-protected', 'git-branch-protected', 'gh-write', 'supabase-remote', 'remote-db', 'db-migrate', 'deploy', 'publish', 'role-spoof', 'protected-file', 'opaque-shell', 'supabase-mcp', 'vercel-mcp', 'mcp-write', 'extra-deny', 'github-mcp', 'mcp-destructive', 'agent-spawn', 'git-clean'];
+const RULES = ['git-push-protected', 'git-branch-protected', 'gh-write', 'supabase-remote', 'remote-db', 'db-migrate', 'deploy', 'publish', 'role-spoof', 'protected-file', 'opaque-shell', 'supabase-mcp', 'vercel-mcp', 'mcp-write', 'extra-deny', 'github-mcp', 'mcp-destructive', 'agent-spawn', 'git-clean', 'team-launch'];
 const KEYS = ['protectedBranches', 'protectedPaths', 'production', 'mcpServers', 'projectRefs', 'hosts', 'extraDeny', 'allow', 'trustedAgentTypes', 'roleEnv', 'defaultRole', 'onError'];
 const outsideCode = (s) => s.replace(/```[\s\S]*?```/g, '');
 
@@ -82,7 +82,7 @@ test('docs/incidents.md labels each incident honestly', () => {
   assert.ok((t.match(/Would offlimits have caught it: (yes|partly|no)/gi) ?? []).length >= 5);
 });
 
-test('CHANGELOG has the 0.1.0 entry with every rule', () => {
+test('CHANGELOG has the 0.1.0 entry and mentions every rule', () => {
   const t = read('CHANGELOG.md');
   assert.ok(t.includes('## 0.1.0 - 2026-10-26'));
   for (const id of RULES) assert.ok(t.includes(id), `missing ${id}`);
