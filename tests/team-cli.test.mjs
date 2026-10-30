@@ -524,3 +524,25 @@ test('a cwd given as an 8.3 short path still launches', { skip: process.platform
     assert.ok(fs.existsSync(path.join(f.dir, 'briefs', 'demo.md')));
   } finally { f.cleanup(); }
 });
+
+test('a lane stuck in "creating" can be abandoned, with or without git leftovers', async () => {
+  const f = fixture();
+  try {
+    const stuck = { stage: 'briefed', note: 'creating', model: 'sonnet' };
+    fs.mkdirSync(f.dir, { recursive: true });
+    fs.writeFileSync(path.join(f.dir, 'board.json'), JSON.stringify({ lanes: { demo: stuck, bare: stuck } }));
+    // demo: the launcher died after git made the worktree and branch; bare: it died before git ran
+    const wt = path.join(f.tmp, 'repo-demo');
+    git(f.root, 'worktree', 'add', '-b', 'feat/demo', wt, 'main');
+    assert.notEqual((await f.run(['done', 'demo'])).code, 0);
+    const r = await f.run(['done', 'demo', '--abandon']);
+    assert.equal(r.code, 0, r.err);
+    assert.ok(!fs.existsSync(wt));
+    assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
+    const b = await f.run(['done', 'bare', '--abandon']);
+    assert.equal(b.code, 0, b.err);
+    const lanes = JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes;
+    assert.equal(lanes.demo.stage, 'abandoned');
+    assert.equal(lanes.bare.stage, 'abandoned');
+  } finally { f.cleanup(); }
+});

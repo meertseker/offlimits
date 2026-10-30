@@ -407,12 +407,32 @@ export async function main(argv, deps = {}) {
     return 0;
   }
 
+  /** Abandon a lane whose board record never got a branch/worktree: clean up what git knows by the lane's own names. */
+  function abandonPartial(lane, { mainRoot, team, dir }) {
+    const rec = { branch: `feat/${lane}`, worktree: lanePath(mainRoot, team, lane) };
+    if (worktrees(mainRoot).includes(path.resolve(rec.worktree))) {
+      execFileSync('git', ['worktree', 'remove', '--force', '--', rec.worktree], { cwd: mainRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    } else if (fs.existsSync(rec.worktree)) {
+      err(`offlimits team: ${rec.worktree} exists but git does not know it as a worktree; left in place`);
+    }
+    pruneLane(mainRoot, rec);
+    updateLane(dir, lane, { stage: 'abandoned', note: undefined });
+    out(`lane ${lane}: abandoned (record had no branch or worktree; removed what git knew)`);
+    return 0;
+  }
+
   function cmdDone({ flags, pos, mainRoot, team, dir }) {
     const lane = pos[0];
     if (!lane || !LANE_RE.test(lane)) throw new Exit(2, `offlimits team: lane name must match ${LANE_RE}`);
     const rec = readBoard(dir).lanes[lane];
     if (!rec) throw new Exit(2, `offlimits team: unknown lane "${lane}"`);
-    assertLane(mainRoot, rec);
+    try {
+      assertLane(mainRoot, rec);
+    } catch (e) {
+      // A launcher killed mid-git leaves {stage: briefed, note: creating} without branch/worktree.
+      if (!flags.abandon) throw e;
+      return abandonPartial(lane, { mainRoot, team, dir });
+    }
     if (!flags.abandon) {
       const st = laneStatus(mainRoot, rec, rec.base ?? resolveBase(mainRoot, team.base));
       if (st.dirty) throw new Exit(1, `offlimits team: lane ${lane} has uncommitted changes; commit or use --abandon`);
