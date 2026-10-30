@@ -6,11 +6,11 @@ Team mode turns a repository into a small software team made of ordinary Claude 
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
-node <plugin>/bin/team.mjs init      # or /offlimits init inside Claude
-team coordinator                      # then talk to it
+/offlimits init                       # inside Claude; prints the `team` function, add it to your profile
+team coordinator                      # in a terminal, then talk to it
 ```
 
-`<plugin>` is the folder the plugin is installed in. The SessionStart banner of any Claude Code session in a team repository prints it (the line starting `team CLI:`); the plugin cache folder for `offlimits` also holds it. There is no npm package, so the launcher is always `node <plugin>/bin/team.mjs`.
+`<plugin>` is the folder the plugin is installed in. You do not need to know it for the first step: run `/offlimits init` inside a Claude Code session in the repository. The skill locates the plugin, runs `init` and prints the `team` shell function below with the absolute path filled in. Add it to your profile, then run `team coordinator` from a terminal. Afterwards the SessionStart banner prints the same path on its `team CLI:` line. There is no npm package, so the launcher is always `node <plugin>/bin/team.mjs`.
 
 `init` prints a one-line shell function for you to add to your profile (offlimits never edits it):
 
@@ -68,8 +68,11 @@ Inside Claude Code the launcher reads `CLAUDECODE` and the session's role. A sub
 |---|---|---|---|---|
 | `init` | yes | yes | no | yes |
 | `coordinator`, `worker`, `done` | yes | yes | no | no (the gate asks) |
-| `board`, `reserve`, `ask` | yes | yes | yes | yes |
-| `stage`, `deliver` | yes | yes | yes (own lane) | no |
+| `board`, `reserve` | yes | yes | yes | yes |
+| `ask` | yes | yes | yes (own lane) | no (needs a lane) |
+| `stage`, `deliver` | yes | yes | yes (own lane) | no (needs a lane) |
+
+`stage`, `deliver` and `ask` all need a lane: `OFFLIMITS_LANE` (set for workers), or `--lane` from the coordinator or a human terminal (`ask` takes the lane the same way). Solo sessions have none.
 
 ## Configuration
 
@@ -86,7 +89,7 @@ Everything lives under `team` in `offlimits.json`, and every key is optional. A 
     "worktreeDir": "..",
     "checks": ["pnpm turbo run lint typecheck test"],
     "deploy": { "steps": ["git push origin main", "gh run watch"], "healthUrl": "https://example.com/api/health" },
-    "rules": ["Never touch text written by the school staff."],
+    "rules": ["Never edit generated files in dist/."],
     "reservations": { "migration": { "scan": "packages/db/supabase/migrations", "pattern": "^(\\d+)_", "width": 4 } },
     "terminal": "auto"
   }

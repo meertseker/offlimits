@@ -5,10 +5,9 @@
 Published 2026-10-25: https://github.com/meertseker/offlimits, release v0.1.0, CI green on Windows, macOS and Linux (Node 20 and 22), `main` ruleset active. Verified end to end: installed from GitHub with `claude plugin install offlimits --marketplace meertseker/offlimits`, a real `--dangerously-skip-permissions` session with `OFFLIMITS_ROLE=worker` was blocked on `git push origin main`.
 
 - [ ] Tag and release v0.3.0 (Mert's go).
-- [ ] Şeker platform: migrate to team mode (`init`, `team.rules`, `reservations.migration`).
 - [ ] Anthropic directory submission (Mert, browser): claude.ai/directory/manage, Submit new, Plugin bundle, repo `meertseker/offlimits`, folder root, press Validate first. Icon is `.claude-plugin/icon.png` and is fixed on first save.
 - [ ] English X account for launch posts (Mert).
-- [ ] Şeker platform: install the plugin at project scope next to the old hook, run both for a week, then remove the old hook.
+- [ ] Şeker platform: install the plugin at project scope next to the old hook and run both for a week, then remove the old hook and migrate to team mode (`init`, `team.rules`, `reservations.migration`).
 - [ ] Usta: write the Wave 0 gate task as "install offlimits" instead of a new hook.
 - [ ] Launch: Show HN and X thread on a Tuesday to Thursday afternoon (UK), drafts per the strategy doc; keep the incident-day kit ready.
 - [ ] Decide whether to keep `CLAUDE.md` at the plugin root (directory review shows a warning) or move it to a skill.

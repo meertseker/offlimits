@@ -18,7 +18,7 @@ team coordinator                      # then talk to it
 
 `init` turns the repository into a team repository: it merges `offlimits.json` (`defaultRole: worker` and a `team` block), adds a managed block to `CLAUDE.md`, a PR template and a `.gitignore` entry, and creates the state folder `.offlimits/team/`. It is safe to run again. At the end it prints a shell function so you can type `team` instead of the long command; add that line to your profile yourself, offlimits does not edit it. There is no npm package: the launcher is a file inside the plugin.
 
-To find `<plugin>`, start Claude Code once in the repository and read the `team CLI:` line of the SessionStart banner, which prints the exact command; or run `/offlimits init` inside Claude, which needs no path. Agents learn the exact `team` command from the same banner, so you never have to explain it to them.
+The first step is `/offlimits init` inside a Claude Code session in the repository: the skill finds the plugin itself, runs `init` and prints the `team` shell-function line with the absolute path filled in. Add that line to your profile, open a terminal and run `team coordinator`. From then on the SessionStart banner prints the same path (the `team CLI:` line), and agents learn the exact command from it, so you never have to explain it to them.
 
 ### A day with offlimits team
 
