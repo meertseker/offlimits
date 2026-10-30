@@ -628,3 +628,105 @@ test('worker refuses to start on an unreadable board.json and keeps it', async (
     assert.ok(!fs.existsSync(path.join(f.tmp, 'repo-demo')));
   } finally { f.cleanup(); }
 });
+
+const SESSION = {
+  KEEP: '1', OFFLIMITS_ROLE: 'worker', MY_ROLE: 'worker', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1',
+  CLAUDECODE: '1', CLAUDE_PID: '9', AI_AGENT: 'claude', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SSE_PORT: '1',
+  CLAUDE_CODE_SESSION_ID: 's', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ATTENDED: '1',
+  CLAUDE_CODE_EXECPATH: 'x', CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT: 'x', CLAUDE_CONFIG_DIR: 'keep',
+};
+
+test('start opens the coordinator in a new terminal with a scrubbed env', async () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(path.join(f.root, 'offlimits.json'), JSON.stringify({ roleEnv: 'MY_ROLE', team: {} }));
+    const seen = [];
+    // MY_ROLE=coordinator lets the guard pass inside Claude; the launched window must not inherit it
+    const r = await f.run(['start'], { env: { ...SESSION, MY_ROLE: 'coordinator' }, extra: { openTerminal: (spec, fn, env) => seen.push({ spec, env }) } });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /opened the coordinator in a new terminal; talk to it there/);
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].env, { KEEP: '1', CLAUDE_CONFIG_DIR: 'keep' });
+    const line = seen[0].spec.args.join(' ');
+    assert.match(line, /team\.mjs/);
+    assert.match(line, /coordinator/);
+    assert.ok(!line.includes('MY_ROLE'));
+    assert.equal(f.calls.spawn.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('start --print, terminal none and a null spec print the command', async () => {
+  const f = fixture();
+  try {
+    const p = await f.run(['start', '--print'], { extra: { openTerminal: () => assert.fail('opened') } });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /cd "/);
+    assert.match(p.out, /node .*team\.mjs.* coordinator/);
+    f.setTeam({ terminal: 'none' });
+    const n = await f.run(['start'], { extra: { openTerminal: () => assert.fail('opened') } });
+    assert.equal(n.code, 0, n.err);
+    assert.match(n.out, /coordinator/);
+    f.setTeam({});
+    const z = await f.run(['start'], { extra: { platform: 'plan9', openTerminal: () => assert.fail('opened') } });
+    assert.equal(z.code, 0, z.err);
+    assert.match(z.out, /node .*team\.mjs.* coordinator/);
+  } finally { f.cleanup(); }
+});
+
+test('start has the coordinator checks: worktree, bad team, live coordinator, worker role', async () => {
+  const f = fixture();
+  try {
+    const opened = () => assert.fail('opened');
+    const wt = path.join(f.tmp, 'wt');
+    git(f.root, 'worktree', 'add', '-q', '-b', 'feat/wt', wt);
+    const a = await f.run(['start'], { cwd: wt, extra: { openTerminal: opened } });
+    assert.equal(a.code, 2);
+    assert.match(a.err, /main checkout/);
+    fs.writeFileSync(path.join(f.root, 'offlimits.json'), JSON.stringify({ team: 'yes' }));
+    assert.equal((await f.run(['start'], { extra: { openTerminal: opened } })).code, 2);
+    f.setTeam({});
+    const child = await liveChild();
+    try {
+      fs.mkdirSync(f.dir, { recursive: true });
+      fs.writeFileSync(path.join(f.dir, 'coordinator.json'), JSON.stringify({ pid: child.pid, startedAt: 'x' }));
+      const b = await f.run(['start'], { extra: { openTerminal: opened } });
+      assert.equal(b.code, 4);
+      assert.match(b.err, /a coordinator is already running \(pid \d+\)/);
+    } finally { child.kill(); }
+    const w = await f.run(['start'], { env: { CLAUDECODE: '1', OFFLIMITS_ROLE: 'worker' }, extra: { openTerminal: opened } });
+    assert.equal(w.code, 3);
+  } finally { f.cleanup(); }
+});
+
+test('init in an empty folder runs git init and prints the next step', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-empty-')));
+  try {
+    const stdout = { s: '', write(x) { this.s += x; return true; } };
+    const code = await main(['init'], { env: {}, cwd: tmp, stdout, stderr: { write() {} }, has: () => true });
+    assert.equal(code, 0, stdout.s);
+    assert.ok(fs.existsSync(path.join(tmp, '.git')));
+    assert.ok(fs.existsSync(path.join(tmp, 'offlimits.json')));
+    assert.ok(fs.existsSync(path.join(tmp, 'CLAUDE.md')));
+    assert.match(stdout.s, /initialised a git repository in /);
+    assert.match(stdout.s, /Next: commit these files, then run \/offlimits start in Claude \(or 'team coordinator' in a terminal\)\./);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('init inside an existing repo does not run git init again', async () => {
+  const f = fixture();
+  try {
+    const gitDir = path.join(f.root, '.git');
+    const headFile = path.join(gitDir, 'HEAD');
+    const before = { head: fs.readFileSync(headFile, 'utf8'), m: fs.statSync(gitDir).mtimeMs, hm: fs.statSync(headFile).mtimeMs };
+    const sub = path.join(f.root, 'sub');
+    fs.mkdirSync(sub);
+    const r = await f.run(['init'], { cwd: sub });
+    assert.equal(r.code, 0, r.err);
+    assert.ok(!/initialised a git repository/.test(r.out));
+    assert.ok(!fs.existsSync(path.join(sub, '.git')));
+    assert.equal(fs.readFileSync(headFile, 'utf8'), before.head);
+    assert.equal(fs.statSync(headFile).mtimeMs, before.hm);
+    assert.equal(fs.statSync(gitDir).mtimeMs, before.m);
+    assert.match(r.out, /Next: commit these files/);
+  } finally { f.cleanup(); }
+});

@@ -342,5 +342,14 @@
   {"name":"[team] [worker] npx offlimits-team worker x","tool_name":"Bash","tool_input":{"command":"npx offlimits-team worker x"},"role":"worker","expect":"deny","rule":"team-launch"},
   {"name":"[team] [worker] pnpm exec offlimits-team done x","tool_name":"Bash","tool_input":{"command":"pnpm exec offlimits-team done x"},"role":"worker","expect":"deny","rule":"team-launch"},
   {"name":"[team] [worker] unquoted backslash path","tool_name":"Bash","tool_input":{"command":"node C:\\x\\offlimits\\bin\\team.mjs worker demo"},"role":"worker","expect":"deny","rule":"team-launch"},
-  {"name":"[team] team --json worker x (solo)","tool_name":"Bash","tool_input":{"command":"team --json worker x"},"role":"solo","expect":"ask","rule":"team-launch"}
+  {"name":"[team] team --json worker x (solo)","tool_name":"Bash","tool_input":{"command":"team --json worker x"},"role":"solo","expect":"ask","rule":"team-launch"},
+  {"name":"[team] [worker] team start","tool_name":"Bash","tool_input":{"command":"team start"},"role":"worker","expect":"deny","rule":"team-launch"},
+  {"name":"[team] [worker] team --print start","tool_name":"Bash","tool_input":{"command":"team --print start"},"role":"worker","expect":"deny","rule":"team-launch"},
+  {"name":"[team] [worker] node team.mjs start","tool_name":"Bash","tool_input":{"command":"node \"C:\\x\\offlimits\\bin\\team.mjs\" start"},"role":"worker","expect":"deny","rule":"team-launch"},
+  {"name":"[team] [subagent, defaultRole worker] team start","tool_name":"Bash","tool_input":{"command":"team start"},"role":"solo","expect":"deny","rule":"team-launch","agent_id":"sub-1","policy":{"defaultRole":"worker"}},
+  {"name":"[team] [human via defaultRole] team start","tool_name":"Bash","tool_input":{"command":"team start"},"role":"solo","expect":"allow","policy":{"defaultRole":"worker"}},
+  {"name":"[team] [human via defaultRole] node team.mjs start","tool_name":"Bash","tool_input":{"command":"node \"C:\\x\\offlimits\\bin\\team.mjs\" start"},"role":"solo","expect":"allow","policy":{"defaultRole":"worker"}},
+  {"name":"[team] [human via defaultRole] team board start","tool_name":"Bash","tool_input":{"command":"team board start"},"role":"solo","expect":"allow","policy":{"defaultRole":"worker"}},
+  {"name":"[team] team start (solo)","tool_name":"Bash","tool_input":{"command":"team start"},"role":"solo","expect":"allow"},
+  {"name":"[team] team start (coordinator)","tool_name":"Bash","tool_input":{"command":"team start"},"role":"coordinator","expect":"allow"}
 ]

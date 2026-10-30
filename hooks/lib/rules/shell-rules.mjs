@@ -906,13 +906,20 @@ function teamLaunch(c) {
   } else return null;
   const sub = rest.find((a) => !a.startsWith('-'));
   const worker = c.ctx.role === 'worker';
+  // start opens a coordinator window: a human's own session (worker only through defaultRole) may; a launched worker or subagent may not
+  const startDenied = worker && !c.ctx.viaDefault;
   // a worker also hits when a launch word follows other arguments (rare false positive: "team board worker")
-  const hit = TEAM_SUBS.has(sub) ? sub : worker ? rest.find((a) => TEAM_SUBS.has(a)) : undefined;
+  let hit;
+  if (TEAM_SUBS.has(sub)) hit = sub;
+  else if (sub === 'start') hit = startDenied ? 'start' : undefined;
+  else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || (a === 'start' && startDenied));
   if (!hit) return null;
   if (!worker && hit === 'init') return null;
   return {
     action: worker ? 'deny' : 'ask',
-    reason: hit === 'init'
+    reason: hit === 'start'
+      ? `${name} start opens a coordinator session, which a worker or subagent may not do ${shown(c)}.`
+      : hit === 'init'
       ? `${name} init rewrites team configuration; re-run it from a terminal with: team init ${shown(c)}.`
       : `${name} ${hit} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
   };

@@ -1,11 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { loadTeam } from './config.mjs';
 import { teamDir, ensureTeamDir } from './state.mjs';
 
 const START = '<!-- offlimits:team:start -->';
 const END = '<!-- offlimits:team:end -->';
 const TEMPLATES = new URL('../../../templates/', import.meta.url);
+
+/** Run `git init` in `dir` (argument array). Caller has already checked that no repository contains it. */
+export function gitInit(dir) {
+  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+}
 
 /** Render `templates/<name>`, replacing `{{key}}`. Unknown keys stay as written. */
 export function renderTemplate(name, vars = {}) {
@@ -14,6 +20,9 @@ export function renderTemplate(name, vars = {}) {
 }
 
 const bullets = (items, none, wrap = (s) => s) => (items.length ? items.map((s) => `- ${wrap(s)}`).join('\n') : none);
+
+// Mert's choice: unattended team windows stall on permission prompts; the gate is what keeps bypass safe.
+const newTeam = (language) => ({ language: language || 'en', permissionMode: 'bypassPermissions' });
 
 function readIfExists(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
@@ -36,7 +45,7 @@ export function runInit(root, { language } = {}) {
   // offlimits.json
   const cfgText = readIfExists(path.join(root, 'offlimits.json'));
   if (cfgText === null) {
-    write('offlimits.json', JSON.stringify({ defaultRole: 'worker', team: { language: language || 'en' } }, null, 2) + '\n');
+    write('offlimits.json', JSON.stringify({ defaultRole: 'worker', team: newTeam(language) }, null, 2) + '\n');
   } else {
     let data = null;
     try { data = JSON.parse(cfgText.replace(/^\uFEFF/, '')); } catch { /* reported below */ }
@@ -45,7 +54,7 @@ export function runInit(root, { language } = {}) {
     } else {
       let dirty = false;
       if (!('defaultRole' in data)) { data.defaultRole = 'worker'; dirty = true; }
-      if (!('team' in data)) { data.team = { language: language || 'en' }; dirty = true; }
+      if (!('team' in data)) { data.team = newTeam(language); dirty = true; }
       if (dirty) write('offlimits.json', JSON.stringify(data, null, 2) + '\n');
     }
   }

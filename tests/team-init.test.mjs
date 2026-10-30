@@ -39,7 +39,7 @@ test('init on an empty repo writes all files', () => {
     assert.ok(r.changed.includes(f), f);
   }
   assert.ok(fs.existsSync(path.join(d, '.offlimits', 'team', 'briefs')));
-  assert.deepEqual(JSON.parse(read(d, 'offlimits.json')), { defaultRole: 'worker', team: { language: 'en' } });
+  assert.deepEqual(JSON.parse(read(d, 'offlimits.json')), { defaultRole: 'worker', team: { language: 'en', permissionMode: 'bypassPermissions' } });
   assert.ok(read(d, 'CLAUDE.md').includes(START) && read(d, 'CLAUDE.md').includes(END));
   assert.ok(read(d, '.gitignore').split(/\r?\n/).includes('.offlimits/'));
 });
@@ -67,7 +67,7 @@ test('init keeps user keys', () => {
   const j = JSON.parse(read(d, 'offlimits.json'));
   assert.deepEqual(j.production, { mcpServers: ['supabase'] });
   assert.equal(j.defaultRole, 'solo');
-  assert.deepEqual(j.team, { language: 'en' });
+  assert.deepEqual(j.team, { language: 'en', permissionMode: 'bypassPermissions' });
 });
 
 test('init keeps CLAUDE.md text outside markers and replaces the block', () => {
@@ -153,4 +153,18 @@ test('init keeps CRLF bytes outside the markers', () => {
   assert.ok(t.startsWith('# Mine\r\nkeep top\r\n'));
   assert.ok(t.endsWith(`${END}\r\nkeep bottom\r\n`));
   assert.ok(!t.includes('old'));
+});
+
+test('a new team block carries permissionMode bypassPermissions', () => {
+  const d = repo();
+  runInit(d, {});
+  assert.deepEqual(JSON.parse(read(d, 'offlimits.json')).team, { language: 'en', permissionMode: 'bypassPermissions' });
+});
+
+test('an existing team block is left untouched', () => {
+  const d = repo();
+  const team = { language: 'tr', rules: ['a'] };
+  fs.writeFileSync(path.join(d, 'offlimits.json'), JSON.stringify({ team }));
+  runInit(d, {});
+  assert.deepEqual(JSON.parse(read(d, 'offlimits.json')).team, team);
 });

@@ -2,7 +2,7 @@
 // PreToolUse entry point. Must never throw out of the top level.
 import { readStdin } from './lib/input.mjs';
 import { loadPolicy, DEFAULT_POLICY, productionConfigured } from './lib/policy.mjs';
-import { resolveRole } from './lib/role.mjs';
+import { resolveRole, roleDetail } from './lib/role.mjs';
 import { repoRoot, commonRoot, currentBranch, repoInfo } from './lib/git.mjs';
 import { decide } from './lib/rules.mjs';
 import { denyMessage, askReason, summarize } from './lib/format.mjs';
@@ -62,9 +62,9 @@ function main() {
     const info = repoInfo(cwd);
     const root = info.root;
     const { policy } = loadPolicy(root ?? cwd);
-    const role = resolveRole(input, process.env, policy);
+    const { role, viaDefault } = roleDetail(input, process.env, policy);
     const branchOf = (dir) => (dir === cwd && info.branch ? info.branch : currentBranch(dir));
-    const d = decide(input, { role, policy, currentBranch: branchOf, cwd, repoRoot: root, commonRoot: info.common });
+    const d = decide(input, { role, viaDefault, policy, currentBranch: branchOf, cwd, repoRoot: root, commonRoot: info.common });
     if (d.action === 'allow') return;
     const summary = summarize(input);
     record(info.common ?? root ?? cwd, input, role, d.action, d.rule, summary);

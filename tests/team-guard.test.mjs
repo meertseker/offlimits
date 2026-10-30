@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { guard, PRIVILEGED, LANE_CMDS } from '../hooks/lib/team/guard.mjs';
 
-const CMDS = ['init', 'coordinator', 'worker', 'done', 'board', 'stage', 'deliver', 'ask', 'reserve'];
-const SOLO_OK = ['init', 'board', 'reserve', 'ask'];
+const CMDS = ['init', 'coordinator', 'worker', 'done', 'board', 'stage', 'deliver', 'ask', 'reserve', 'start'];
+const SOLO_OK = ['init', 'start', 'board', 'reserve', 'ask'];
 
 function expected(claude, role, cmd) {
   if (!claude) return true;
@@ -42,6 +42,6 @@ test('custom roleEnv', () => {
 });
 
 test('constants', () => {
-  assert.deepEqual(PRIVILEGED, ['coordinator', 'worker', 'done', 'init']);
+  assert.deepEqual(PRIVILEGED, ['coordinator', 'worker', 'done', 'init', 'start']);
   assert.deepEqual(LANE_CMDS, ['stage', 'deliver', 'ask']);
 });

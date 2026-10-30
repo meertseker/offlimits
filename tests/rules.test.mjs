@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { decide, RULE_IDS } from '../hooks/lib/rules.mjs';
 import { RULES } from '../hooks/lib/rules/shell-rules.mjs';
 import { DEFAULT_POLICY } from '../hooks/lib/policy.mjs';
-import { resolveRole } from '../hooks/lib/role.mjs';
+import { roleDetail } from '../hooks/lib/role.mjs';
 
 const dir = new URL('./fixtures/', import.meta.url);
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
@@ -47,9 +47,10 @@ for (const c of cases) {
   test(`fixture (${c.file}): ${c.name}`, () => {
     const policy = mergePolicy(c.policy);
     // Same resolution as the gate: a fixture role "solo" means no env variable, so defaultRole applies.
-    const role = resolveRole(c.agent_id ? { agent_id: c.agent_id } : null, c.role && c.role !== 'solo' ? { [policy.roleEnv]: c.role } : {}, policy);
+    const { role, viaDefault } = roleDetail(c.agent_id ? { agent_id: c.agent_id } : null, c.role && c.role !== 'solo' ? { [policy.roleEnv]: c.role } : {}, policy);
     const ctx = {
       role,
+      viaDefault,
       policy,
       currentBranch: branchStub(c),
       cwd: '/repo',
