@@ -18,6 +18,11 @@ const BOOL_FLAGS = ['night', 'print', 'resume', 'takeover', 'json', 'abandon', '
 const COMMANDS = ['init', 'coordinator', 'worker', 'board', 'stage', 'deliver', 'ask', 'reserve', 'done'];
 const ID = /^[A-Za-z0-9][\w.-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Variables a running Claude Code session puts in its tools' environment; a new worker session must not inherit them.
+const SESSION_ENV = [
+  'CLAUDECODE', 'CLAUDE_PID', 'AI_AGENT', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT',
+];
 
 const USAGE = `offlimits team <command>
 
@@ -253,9 +258,9 @@ export async function main(argv, deps = {}) {
       return 0;
     }
     const clean = { ...env };
-    // The worker is a fresh Claude session: drop our role and the coordinator's Claude session variables.
-    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID', 'CLAUDECODE', 'CLAUDE_PID', 'AI_AGENT']) delete clean[k];
-    for (const k of Object.keys(clean)) if (k.startsWith('CLAUDE_CODE_')) delete clean[k];
+    // The worker is a fresh Claude session: drop our role and the variables the coordinator's session injected.
+    // User configuration such as CLAUDE_CODE_USE_BEDROCK or CLAUDE_CODE_GIT_BASH_PATH stays.
+    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID', ...SESSION_ENV]) delete clean[k];
     open(spec, undefined, clean);
     out(`opened a terminal for ${lane}`);
     return 0;

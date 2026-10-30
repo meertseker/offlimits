@@ -457,11 +457,21 @@ test('coordinator child env uses the configured roleEnv; terminal env is scrubbe
     assert.equal(f.calls.spawn[0].env.MY_ROLE, 'coordinator');
     const seen = [];
     const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md')], {
-      env: { KEEP: '1', MY_ROLE: 'coordinator', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1', CLAUDECODE: '1', CLAUDE_PID: '9', AI_AGENT: 'claude', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SSE_PORT: '1', CLAUDE_CONFIG_DIR: 'keep' },
+      env: {
+        KEEP: '1', MY_ROLE: 'coordinator', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1',
+        CLAUDECODE: '1', CLAUDE_PID: '9', AI_AGENT: 'claude', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SSE_PORT: '1',
+        CLAUDE_CODE_SESSION_ID: 's', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ATTENDED: '1',
+        CLAUDE_CODE_EXECPATH: 'x', CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT: 'x', CLAUDE_CONFIG_DIR: 'keep',
+        CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_GIT_BASH_PATH: 'C:\\Git\\bin\\bash.exe', CLAUDE_CODE_OAUTH_TOKEN: 't',
+      },
       extra: { openTerminal: (spec, fn, env) => seen.push({ spec, fn, env }) },
     });
     assert.equal(w.code, 0, w.err);
-    assert.deepEqual(seen[0].env, { KEEP: '1', CLAUDE_CONFIG_DIR: 'keep' });
+    // session-injected variables go; user configuration for the worker's claude stays
+    assert.deepEqual(seen[0].env, {
+      KEEP: '1', CLAUDE_CONFIG_DIR: 'keep',
+      CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_GIT_BASH_PATH: 'C:\\Git\\bin\\bash.exe', CLAUDE_CODE_OAUTH_TOKEN: 't',
+    });
     assert.ok(seen[0].spec.args.join(' ').includes('MY_ROLE'));
   } finally { f.cleanup(); }
 });
