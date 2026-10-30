@@ -44,6 +44,29 @@ const ASSIGN = /^[A-Za-z_]\w*=/;
 const EVAL_SAFE = new Set(['ssh-agent', 'brew', 'direnv', 'pyenv', 'rbenv', 'nodenv', 'fnm', 'zoxide', 'starship', 'mise', 'rtx', 'conda', 'keychain', 'dircolors', 'opam', 'luarocks', 'pdm', 'register-python-argcomplete']);
 
 const START_LIKE = /^\s*(?:&\s*)?(?:start-process|saps|start)\s/i;
+
+// PowerShell lead-ins that still run the command after them: assignments ($p =, $x +=, $script:p =, [type]$p =, ${p} =,
+// $a, $b =, $h['k'] =, $p ??=), [type] casts before a parenthesised body, dot-sourcing (. cmd) and the call operator (& cmd).
+// $env:NAME = is left to stripAssignments, which records the variable.
+const PS_TYPE = String.raw`\[(?:[^\[\]]|\[[^\[\]]*\])*\]`;
+const PS_VAR = String.raw`(?:\$\{[^}]*\}|\$(?!env:)[A-Za-z_]\w*(?::[A-Za-z_]\w*)?)(?:\.\w+|\[[^\]]*\])*`;
+const PS_LEAD = new RegExp(
+  String.raw`^\s*(?:(?:${PS_TYPE}\s*)*${PS_VAR}(?:\s*,\s*${PS_VAR})*\s*(?:[-+*/%]|\?\?)?=(?!=)|(?:${PS_TYPE}\s*)+(?=\()|\.(?=\s+\S)|&)\s*`,
+  'i',
+);
+
+/** Drop PowerShell lead-ins (see PS_LEAD) from the start of a segment; the command after them is what runs. */
+export function psLead(seg) {
+  const s = dropPsLead(seg);
+  return s.trim() ? s.trim() : String(seg).trim();
+}
+
+/** psLead without trimming (scan() needs the space after Start-Process). */
+function dropPsLead(seg) {
+  let s = String(seg);
+  for (let m; (m = PS_LEAD.exec(s)) && m[0].length; ) s = s.slice(m[0].length);
+  return s;
+}
 const OPEN = Symbol('open');
 const CLOSE = Symbol('close');
 
@@ -52,7 +75,7 @@ const CLOSE = Symbol('close');
  * character (Windows paths such as "C:\repo\" must not swallow the closing quote).
  * With marks, grouping parentheses are reported as OPEN / CLOSE items.
  */
-function scan(s, literalBackslash, marks = false) {
+function scan(s, literalBackslash, marks = false, ps = false) {
   const out = [];
   let cur = '';
   let q = null; // active quote char
@@ -94,7 +117,7 @@ function scan(s, literalBackslash, marks = false) {
       cur += c;
       continue;
     }
-    if (c === '(' && START_LIKE.test(cur)) {
+    if (c === '(' && START_LIKE.test(ps ? dropPsLead(cur) : cur)) {
       // Start-Process git ('push', 'origin'): an argument list, not a grouping
       depth++;
       cur += c;
@@ -671,8 +694,14 @@ function wtBodies(args) {
   const out = [];
   const chunks = [[]];
   for (const a of args) {
-    if (a === ';' || a === '\\;') chunks.push([]);
-    else chunks.at(-1).push(a);
+    if (a === ';' || a === '\\;') { chunks.push([]); continue; }
+    if (!/(?<!\\);/.test(a)) { chunks.at(-1).push(a); continue; }
+    // wt splits its own command line on every unescaped ';', also one inside an argument ('nt;nt', 'echo hi;nt'); the
+    // pieces are command-line text that the opened program splits into words again
+    a.split(/(?<!\\);/).forEach((piece, n) => {
+      if (n > 0) chunks.push([]);
+      chunks.at(-1).push(...piece.split(/\s+/).filter(Boolean));
+    });
   }
   for (const c of chunks) {
     let k = 0;
@@ -689,6 +718,60 @@ function wtBodies(args) {
     if (!argv.length) continue;
     if (argv.some(hasExpansion)) { out.push(OPAQUE_BODY); continue; }
     out.push({ text: quoteJoin(argv) });
+  }
+  return out;
+}
+
+/** Quote every unescaped ';' outside quotes as its own word, so re-splitting the text keeps it for wt. */
+function protectSemicolons(s) {
+  let out = '';
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === q) q = null; out += c; continue; }
+    if (c === "'" || c === '"') q = c;
+    if (c === ';' && s[i - 1] !== '\\') out += " ';' ";
+    else out += c;
+  }
+  return out;
+}
+
+/**
+ * wt commands anywhere in a cmd body: cmd runs each command between &, &&, ||, |, and parentheses (^ escapes), after an
+ * optional @ and `start ["title"] [/switches]`. Each one starting with wt comes back as `wt ...` with its ';' kept for wt.
+ */
+function cmdWtBodies(body) {
+  const parts = [];
+  let cur = '';
+  let q = false;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"') q = !q;
+    if (!q && c === '^' && i + 1 < body.length) { cur += body[++i]; continue; }
+    if (!q && '&|()'.includes(c)) { parts.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  parts.push(cur);
+  const out = [];
+  const isWt = (w) => baseName(w.replace(/"/g, '')) === 'wt';
+  for (const part of parts) {
+    let p = part.replace(/^[\s@]+/, '');
+    let [w, next] = readWord(p, 0, true);
+    if (/^"?start"?$/i.test(w)) {
+      p = p.slice(next);
+      for (;;) {
+        p = p.trimStart();
+        [w, next] = readWord(p, 0, true);
+        if (!w || isWt(w)) break;
+        const low = w.toLowerCase();
+        if (w.startsWith('"') || CMD_START_SWITCH.has(low)) { p = p.slice(next); continue; }
+        if (CMD_START_VALUE.has(low)) { p = p.slice(next).trimStart(); p = p.slice(readWord(p, 0, true)[1]); continue; }
+        break;
+      }
+    }
+    if (!w || !isWt(w)) continue;
+    const rest = p.slice(next);
+    if (rest.includes(';')) out.push(`wt ${protectSemicolons(rest)}`);
   }
   return out;
 }
@@ -791,7 +874,7 @@ function carrierBodies(toks, i, segment) {
   if (name === 'iex' || name === 'invoke-expression') {
     const p = psParam(args, ['command']);
     const body = p ? p.value : args.join(' ');
-    if (body) out.push({ text: body });
+    if (body) out.push({ text: body, ps: true });
   } else if (name === 'start-process' || name === 'saps' || name === 'start') {
     out.push(...startBodies(name, rawAfterCommand(segment)));
   } else if (name === 'wt') {
@@ -803,7 +886,7 @@ function carrierBodies(toks, i, segment) {
   } else if (name === 'invoke-command' || name === 'icm') {
     const a = segment.indexOf('{');
     const b = segment.lastIndexOf('}');
-    if (a !== -1) out.push({ text: segment.slice(a + 1, b > a ? b : segment.length) });
+    if (a !== -1) out.push({ text: segment.slice(a + 1, b > a ? b : segment.length), ps: true });
   } else if (name === 'cross-env-shell') {
     const body = args.filter((x) => !ASSIGN.test(x)).join(' ');
     if (body) out.push({ text: body });
@@ -840,8 +923,9 @@ function wrapperInfo(segment) {
   while (i < toks.length && ASSIGN.test(toks[i])) i++;
   if (i >= toks.length) return { bodies: [], opaque: false };
   const carried = carrierBodies(toks, i, segment);
-  const done = (bodies, opaque, evalOpaque = false) => ({
-    bodies: [...carried.filter((c) => c.text !== undefined), ...bodies.map((text) => ({ text }))],
+  // ps: whether the own bodies are PowerShell code (undefined: same language as the segment)
+  const done = (bodies, opaque, evalOpaque = false, ps = undefined) => ({
+    bodies: [...carried.filter((c) => c.text !== undefined), ...bodies.map((text) => ({ text, ps }))],
     opaque: opaque || carried.some((c) => c.opaque),
     evalOpaque,
   });
@@ -863,13 +947,13 @@ function wrapperInfo(segment) {
   if (name === 'eval') {
     // eval of command output is opaque, except well-known environment setup tools
     const generated = substitutions(args.join(' ')).some((b) => !EVAL_SAFE.has(baseName(tokens(b)[0])));
-    return done(args.length ? [args.join(' ')] : [], false, generated);
+    return done(args.length ? [args.join(' ')] : [], false, generated, false);
   }
   if (POSIX_SHELLS.has(name)) {
     const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a));
     if (k !== -1) {
       const j = afterFlag(k);
-      return done(j === -1 ? [] : [args[j]], false);
+      return done(j === -1 ? [] : [args[j]], false, false, false);
     }
     // No -c: reads stdin unless it is given a script file.
     const found = [];
@@ -877,7 +961,7 @@ function wrapperInfo(segment) {
     if (hs !== -1 && hs + 1 < args.length) found.push(args[hs + 1]);
     const positional = args.filter((a) => !a.startsWith('-'));
     const redirected = args.some((a) => a.startsWith('<'));
-    return done(found, positional.length === 0 || redirected);
+    return done(found, positional.length === 0 || redirected, false, false);
   }
   if (PS_SHELLS.has(name)) {
     const e = args.findIndex(isPsEncodedFlag);
@@ -888,10 +972,10 @@ function wrapperInfo(segment) {
       } catch {
         decoded = '';
       }
-      return done(decoded ? [decoded] : [], false);
+      return done(decoded ? [decoded] : [], false, false, true);
     }
     const k = args.findIndex(isPsCommandFlag);
-    if (k !== -1 && k + 1 < args.length) return done([args.slice(k + 1).join(' ')], false);
+    if (k !== -1 && k + 1 < args.length) return done([args.slice(k + 1).join(' ')], false, false, true);
     const hasWork = args.some((a) => !a.startsWith('-')) && args.every((a) => a !== '-');
     return done([], !hasWork || args.includes('-'));
   }
@@ -900,13 +984,9 @@ function wrapperInfo(segment) {
     if (k === -1) return done([], false);
     const first = args[k].slice(2); // e.g. /c"git push" tokenises to "/cgit push"
     const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ');
-    // cmd has no ';' separator, but wt does: "wt ; nt <cmd>" also runs `wt nt <cmd>`. Only a standalone ';' counts, and
-    // every other ';' stays where it is so a nested shell body is still split by the checks that follow.
-    const extra = [];
-    if (baseName(tokens(body)[0]) === 'wt') {
-      for (const part of body.split(/\s;(?=\s|$)/).slice(1)) if (part.trim()) extra.push(`wt ${part.trim()}`);
-    }
-    return done(body ? [body, ...extra] : [], false);
+    // cmd has no ';' separator, but wt does: every wt command in the body is also checked with its ';' kept for wt.
+    // The body itself keeps every ';' where it is, so a nested shell body is still split by the checks that follow.
+    return done(body ? [body, ...cmdWtBodies(body)] : [], false, false, false);
   }
   return done([], false);
 }
@@ -1058,7 +1138,7 @@ function nextState(seg, st, w) {
  * @param {{maxSegments?: number, maxVars?: number}} [budget]
  * @returns {Array<{segment: string, cwd: string | null, envs: Readonly<Record<string, string>>}> & {overBudget?: string}}
  */
-export function expandWithState(command, budget = {}) {
+export function expandWithState(command, budget = {}, { ps = false } = {}) {
   const out = [];
   const seen = new Set();
   const ids = new Map();
@@ -1087,7 +1167,7 @@ export function expandWithState(command, budget = {}) {
     },
   };
   try {
-    walk(String(command ?? ''), { cwd: '.', envs: Object.freeze({}), id: 0 }, 0, w);
+    walk(String(command ?? ''), { cwd: '.', envs: Object.freeze({}), id: 0 }, 0, w, ps);
   } catch (err) {
     if (err !== OVER) throw err;
     out.overBudget = overReason;
@@ -1095,10 +1175,10 @@ export function expandWithState(command, budget = {}) {
   return out;
 }
 
-function walk(text, state0, depth, w) {
+function walk(text, state0, depth, w, ps = false) {
   const { emit } = w;
-  const passes = [scan(text, false, true)];
-  if (text.includes('\\')) passes.push(scan(text, true, true));
+  const passes = [scan(text, false, true, ps)];
+  if (text.includes('\\')) passes.push(scan(text, true, true, ps));
   for (const items of passes) {
     let st = state0;
     const stack = [];
@@ -1111,7 +1191,9 @@ function walk(text, state0, depth, w) {
         if (stack.length) st = stack.pop();
         continue;
       }
-      const seg = clean(it);
+      // PowerShell: `$p = git push`, `[void](...)`, `. git push` run the command after the lead-in
+      const raw = clean(it);
+      const seg = ps ? psLead(raw) : raw;
       if (!seg) continue;
       if (emit(seg, st) && !seg.startsWith(OPAQUE_PREFIX)) {
         const info = wrapperInfo(seg);
@@ -1120,13 +1202,15 @@ function walk(text, state0, depth, w) {
         else {
           for (const b of bodies) {
             const cwd = b.cwdUnknown ? null : b.chdir !== undefined ? joinCwd(st.cwd, b.chdir) : st.cwd;
-            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w);
+            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w, b.ps ?? ps);
           }
         }
         if (info.opaque) emit(OPAQUE_STDIN, st);
         if (info.evalOpaque) emit(OPAQUE_EVAL, st);
       }
-      st = nextState(seg, st, w);
+      // the lead-in may itself set a variable ($b = 'main'); the command after it may change directory
+      st = nextState(raw, st, w);
+      if (seg !== raw) st = nextState(seg, st, w);
     }
   }
 }

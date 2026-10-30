@@ -89,7 +89,7 @@ export function decide(input, ctx) {
     const command = String(toolInput.command ?? '');
     // Input budget: the hook must answer well inside Claude Code's hook timeout, or the call proceeds.
     if (command.length > BUDGET.maxBytes) return overBudget(ctx, `is longer than ${BUDGET.maxBytes / 1024} KB`);
-    const segs = expandWithState(command, BUDGET);
+    const segs = expandWithState(command, BUDGET, { ps: tool === 'PowerShell' });
     if (segs.overBudget) return overBudget(ctx, `has ${segs.overBudget}`);
     const heads = new Map();
     const shared = { ...ctx, currentBranch: branchLookup(ctx.currentBranch), work: { words: BUDGET.maxBraceWords } };
