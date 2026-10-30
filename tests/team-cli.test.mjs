@@ -708,7 +708,7 @@ test('init in an empty folder runs git init and prints the next step', async () 
     assert.ok(fs.existsSync(path.join(tmp, 'offlimits.json')));
     assert.ok(fs.existsSync(path.join(tmp, 'CLAUDE.md')));
     assert.match(stdout.s, /initialised a git repository in /);
-    assert.match(stdout.s, /Next: commit these files, then run \/offlimits start in Claude \(or 'team coordinator' in a terminal\)\./);
+    assert.match(stdout.s, /Next: commit these files \(git add offlimits\.json CLAUDE\.md \.gitignore \.github\/pull_request_template\.md\), then run \/offlimits start in Claude \(or 'team coordinator' in a terminal\)\./);
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
@@ -729,4 +729,69 @@ test('init inside an existing repo does not run git init again', async () => {
     assert.equal(fs.statSync(gitDir).mtimeMs, before.m);
     assert.match(r.out, /Next: commit these files/);
   } finally { f.cleanup(); }
+});
+
+function neverInit(extra = {}) {
+  return { gitInit: () => assert.fail('git init must not run'), ...extra };
+}
+
+test('init in a subfolder of a repo does not git init, even when git itself fails', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-fake-')));
+  try {
+    // a bare ".git" folder git cannot read: every git call fails, the walk still sees it
+    fs.mkdirSync(path.join(tmp, '.git'));
+    const sub = path.join(tmp, 'a', 'b');
+    fs.mkdirSync(sub, { recursive: true });
+    const stderr = { s: '', write(x) { this.s += x; return true; } };
+    const code = await main(['init'], { env: {}, cwd: sub, stdout: { write() {} }, stderr, has: () => true, ...neverInit({ gitInit: () => { throw new Error('boom'); } }) });
+    assert.notEqual(code, 0);
+    assert.ok(!fs.existsSync(path.join(sub, '.git')));
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('init in a git worktree (.git is a file) does not git init', async () => {
+  const f = fixture();
+  try {
+    const wt = path.join(f.tmp, 'wt');
+    git(f.root, 'worktree', 'add', '-q', '-b', 'feat/wt', wt);
+    assert.ok(fs.statSync(path.join(wt, '.git')).isFile());
+    const r = await f.run(['init'], { cwd: wt, extra: neverInit() });
+    assert.ok(!/initialised a git repository/.test(r.out));
+  } finally { f.cleanup(); }
+});
+
+test('init honours GIT_DIR and does not git init', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-gd-')));
+  try {
+    const stderr = { s: '', write(x) { this.s += x; return true; } };
+    await main(['init'], { env: { GIT_DIR: path.join(tmp, 'elsewhere.git') }, cwd: tmp, stdout: { write() {} }, stderr, has: () => true, ...neverInit() });
+    assert.ok(!fs.existsSync(path.join(tmp, '.git')));
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('init refuses to git init in the home directory', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-home-')));
+  try {
+    const stderr = { s: '', write(x) { this.s += x; return true; } };
+    const code = await main(['init'], { env: {}, cwd: tmp, homedir: () => tmp, stdout: { write() {} }, stderr, has: () => true, ...neverInit() });
+    assert.equal(code, 2);
+    assert.match(stderr.s, /make a project folder first/);
+    assert.ok(!fs.existsSync(path.join(tmp, '.git')));
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('isUnsafeInitDir flags the home directory and a drive root', async () => {
+  const { isUnsafeInitDir } = await import('../hooks/lib/team/init.mjs');
+  const root = path.parse(process.cwd()).root;
+  assert.equal(isUnsafeInitDir(root, os.tmpdir()), true);
+  assert.equal(isUnsafeInitDir(os.tmpdir(), os.tmpdir()), true);
+  assert.equal(isUnsafeInitDir(path.join(os.tmpdir(), 'proj'), os.tmpdir()), false);
+});
+
+test('terminal env scrub is case-insensitive on win32 and exact elsewhere', async () => {
+  const { scrubEnv } = await import('../hooks/lib/team/cli.mjs');
+  const env = { Path: 'p', ClaudeCode: '1', claude_code_entrypoint: 'cli', Offlimits_Role: 'worker', my_role: 'x', KEEP: '1' };
+  assert.deepEqual(scrubEnv(env, 'MY_ROLE', 'win32'), { Path: 'p', KEEP: '1' });
+  assert.deepEqual(scrubEnv(env, 'MY_ROLE', 'linux'), { Path: 'p', ClaudeCode: '1', claude_code_entrypoint: 'cli', Offlimits_Role: 'worker', my_role: 'x', KEEP: '1' });
+  assert.deepEqual(scrubEnv({ CLAUDECODE: '1', MY_ROLE: 'c', K: '1' }, 'MY_ROLE', 'linux'), { K: '1' });
 });

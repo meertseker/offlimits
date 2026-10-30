@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { loadTeam } from './config.mjs';
 import { teamDir, ensureTeamDir } from './state.mjs';
@@ -7,6 +8,28 @@ import { teamDir, ensureTeamDir } from './state.mjs';
 const START = '<!-- offlimits:team:start -->';
 const END = '<!-- offlimits:team:end -->';
 const TEMPLATES = new URL('../../../templates/', import.meta.url);
+
+/**
+ * Is `dir` inside a git repository? Looks only at the filesystem (a `.git` folder or file in dir or a parent, or GIT_DIR),
+ * so a failing git call can never make an existing repository look missing.
+ */
+export function insideGitRepo(dir, env = process.env) {
+  if (env.GIT_DIR) return true;
+  let d = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(d, '.git'))) return true;
+    const up = path.dirname(d);
+    if (up === d) return false;
+    d = up;
+  }
+}
+
+/** The home directory or a drive/filesystem root: never somewhere to auto-`git init`. */
+export function isUnsafeInitDir(dir, home = os.homedir()) {
+  const d = path.resolve(dir);
+  const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  return d === path.parse(d).root || norm(d) === norm(path.resolve(home));
+}
 
 /** Run `git init` in `dir` (argument array). Caller has already checked that no repository contains it. */
 export function gitInit(dir) {

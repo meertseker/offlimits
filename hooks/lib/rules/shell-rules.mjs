@@ -913,6 +913,11 @@ function teamLaunch(c) {
   if (TEAM_SUBS.has(sub)) hit = sub;
   else if (sub === 'start') hit = startDenied ? 'start' : undefined;
   else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || (a === 'start' && startDenied));
+  // a launched worker or subagent whose subcommand is hidden behind a variable or substitution (team $T, team $(echo start))
+  const SAFE_SUBS = ['board', 'stage', 'deliver', 'ask', 'reserve'];
+  if (!hit && startDenied && !SAFE_SUBS.includes(sub) && rest.some((a) => /[$`]/.test(a))) {
+    return { action: 'deny', reason: `${name}: team subcommand is not visible (a variable or substitution hides it) ${shown(c)}.` };
+  }
   if (!hit) return null;
   if (!worker && hit === 'init') return null;
   return {

@@ -476,6 +476,145 @@ function psParam(args, names) {
   return null;
 }
 
+// --- terminal launchers: the command they open is re-parsed like a nested shell ---
+
+const SAFE_WORD = /^[\w@%+=:,./\\-]+$/;
+/** Re-join argv into text that tokenises back to the same words. */
+function quoteJoin(argv) {
+  return argv.map((a) => (SAFE_WORD.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`)).join(' ');
+}
+const OPAQUE_BODY = { opaque: true };
+const hasExpansion = (s) => /[$`]/.test(s);
+
+const PS_START_VALUE = ['filepath', 'file', 'path', 'argumentlist', 'args', 'arguments', 'workingdirectory', 'wd', 'verb', 'windowstyle', 'redirectstandardinput', 'redirectstandardoutput', 'redirectstandarderror', 'credential'];
+const PS_START_SWITCH = new Set(['wait', 'nonewwindow', 'passthru', 'usenewenvironment', 'loadenvironment']);
+const CMD_START_VALUE = new Set(['/d', '/affinity', '/node']);
+const CMD_START_SWITCH = new Set(['/min', '/max', '/wait', '/b', '/i', '/low', '/normal', '/high', '/realtime', '/abovenormal', '/belownormal', '/separate', '/shared']);
+
+/** cmd `start` and PowerShell Start-Process / saps / start. */
+function startBodies(args) {
+  const out = [];
+  const used = new Set();
+  const named = {};
+  for (let k = 0; k < args.length; k++) {
+    const m = /^-([A-Za-z]+)(?::(.*))?$/.exec(args[k]);
+    if (!m) continue;
+    const n = m[1].toLowerCase();
+    if (PS_START_VALUE.includes(n)) {
+      if (m[2] !== undefined) { named[n] = m[2]; used.add(k); } else if (k + 1 < args.length) { named[n] = args[k + 1]; used.add(k); used.add(k + 1); }
+    }
+  }
+  const pick = (...ns) => ns.map((n) => named[n]).find((v) => v !== undefined);
+  const wd = pick('workingdirectory', 'wd');
+  let file = pick('filepath', 'file', 'path');
+  const list = pick('argumentlist', 'args', 'arguments');
+  // leading options before the program: PowerShell switches, cmd /D dir, /min ...
+  let k = 0;
+  const rest = [];
+  let seenExe = file !== undefined;
+  for (; k < args.length; k++) {
+    if (used.has(k)) continue;
+    const a = args[k];
+    const low = a.toLowerCase();
+    if (!seenExe && /^-[A-Za-z]+$/.test(a) && PS_START_SWITCH.has(low.slice(1))) continue;
+    if (!seenExe && CMD_START_SWITCH.has(low)) continue;
+    if (!seenExe && CMD_START_VALUE.has(low)) { k++; continue; }
+    if (a === '') continue;
+    seenExe = true;
+    rest.push(a);
+  }
+  const emit = (exe, argv, raw = false) => {
+    if (exe === undefined || exe === '') return;
+    if (hasExpansion(exe) || argv.some(hasExpansion)) { out.push(OPAQUE_BODY); return; }
+    const text = raw ? [quoteJoin([exe]), ...argv].join(' ') : quoteJoin([exe, ...argv]);
+    out.push(wd ? { text, chdir: wd } : { text });
+  };
+  // -ArgumentList is an array ('a','b' tokenises to a,b) or one string of arguments
+  const rawList = list !== undefined && !list.includes(',');
+  const listArgs = list === undefined ? null : rawList ? [list] : list.split(',').map((x) => x.trim()).filter(Boolean);
+  if (file !== undefined) {
+    emit(file, listArgs ?? rest, rawList);
+    return out;
+  }
+  // cmd `start ["title"] program args`: the title is a quoted first word we cannot tell apart, so check both readings
+  const readings = rest.length > 1 ? [rest, rest.slice(1)] : [rest];
+  for (const r of readings) {
+    const [exe, ...tail] = r;
+    emit(exe, listArgs ?? tail, rawList);
+  }
+  return out;
+}
+
+const WT_VALUE = new Set(['-w', '--window', '-d', '--startingdirectory', '--title', '-p', '--profile', '--tabcolor', '--colorscheme', '--size', '--pos', '-H', '-V', '-s', '--size']);
+const WT_VALUE_LOW = new Set([...WT_VALUE].map((x) => x.toLowerCase()));
+const WT_SUBS = new Set(['new-tab', 'nt', 'split-pane', 'sp', 'new-window', 'nw']);
+
+/** Windows Terminal: `wt [-w 0] nt [-d dir] [--title t] <command...> [; nt ...]`. */
+function wtBodies(args) {
+  const out = [];
+  const chunks = [[]];
+  for (const a of args) {
+    if (a === ';' || a === '\\;') chunks.push([]);
+    else chunks.at(-1).push(a);
+  }
+  for (const c of chunks) {
+    let k = 0;
+    while (k < c.length) {
+      const a = c[k];
+      const low = a.toLowerCase();
+      if (a === '--') { k++; break; }
+      if (WT_SUBS.has(low)) { k++; continue; }
+      if (WT_VALUE_LOW.has(low)) { k += 2; continue; }
+      if (/^--?[A-Za-z]/.test(a)) { k++; continue; }
+      break;
+    }
+    const argv = c.slice(k);
+    if (!argv.length) continue;
+    if (argv.some(hasExpansion)) { out.push(OPAQUE_BODY); continue; }
+    out.push({ text: quoteJoin(argv) });
+  }
+  return out;
+}
+
+const TERMINAL_EMULATORS = new Set(['x-terminal-emulator', 'xterm', 'konsole', 'gnome-terminal', 'mate-terminal', 'xfce4-terminal', 'terminator', 'tilix', 'lxterminal', 'urxvt', 'rxvt', 'alacritty', 'kitty', 'foot']);
+
+/** Linux terminals: the command follows -e / -x / --. */
+function terminalBodies(name, args) {
+  let k = args.findIndex((a) => a === '-e' || a === '-x' || a === '--' || a === '--command' || a === '--exec' || a.startsWith('--command=') || a.startsWith('--exec='));
+  if (k === -1) return name === 'kitty' || name === 'foot' ? terminalTail(args) : [];
+  const a = args[k];
+  if (a.includes('=')) return terminalTail([a.slice(a.indexOf('=') + 1)]);
+  return terminalTail(args.slice(k + 1));
+}
+
+function terminalTail(argv) {
+  if (!argv.length) return [];
+  if (argv.some(hasExpansion)) return [OPAQUE_BODY];
+  // a single word with spaces is a whole command line (gnome-terminal -e "git push origin main")
+  return [{ text: argv.length === 1 ? argv[0] : quoteJoin(argv) }];
+}
+
+/** osascript: pull `do script "..."` bodies out of the AppleScript; any other script is opaque. */
+function osascriptBodies(args) {
+  const out = [];
+  let any = false;
+  for (let k = 0; k < args.length; k++) {
+    if (args[k] !== '-e' || k + 1 >= args.length) continue;
+    any = true;
+    const script = args[++k];
+    const re = /do script\s+"((?:[^"\\]|\\.)*)"/gi;
+    let m;
+    let found = false;
+    while ((m = re.exec(script))) {
+      found = true;
+      out.push({ text: m[1].replace(/\\(["\\])/g, '$1') });
+    }
+    if (!found) out.push(OPAQUE_BODY);
+  }
+  if (!any && args.length) out.push(OPAQUE_BODY);
+  return out;
+}
+
 /** Bodies that other command carriers run (PowerShell, git submodule foreach, find -exec, runners). */
 function carrierBodies(toks, i, segment) {
   const out = [];
@@ -508,16 +647,13 @@ function carrierBodies(toks, i, segment) {
     const body = p ? p.value : args.join(' ');
     if (body) out.push({ text: body });
   } else if (name === 'start-process' || name === 'saps' || name === 'start') {
-    const file = psParam(args, ['filepath', 'file', 'path']);
-    const list = psParam(args, ['argumentlist', 'args', 'arguments']);
-    const wd = psParam(args, ['workingdirectory', 'wd']);
-    const used = new Set();
-    for (const p of [file, list, wd]) if (p) for (let k = 0; k < p.len; k++) used.add(p.at + k);
-    const pos = args.filter((a, k) => !used.has(k) && !/^[-/][A-Za-z]/.test(a) && a !== '');
-    const exe = file ? file.value : pos.shift();
-    const argv = list ? list.value.split(',') : pos.length ? [pos.join(' ')] : [];
-    const text = [exe, ...argv].filter(Boolean).join(' ').trim();
-    if (text) out.push(wd ? { text, chdir: wd.value } : { text });
+    out.push(...startBodies(args));
+  } else if (name === 'wt') {
+    out.push(...wtBodies(args));
+  } else if (TERMINAL_EMULATORS.has(name)) {
+    out.push(...terminalBodies(name, args));
+  } else if (name === 'osascript') {
+    out.push(...osascriptBodies(args));
   } else if (name === 'invoke-command' || name === 'icm') {
     const a = segment.indexOf('{');
     const b = segment.lastIndexOf('}');
@@ -558,7 +694,11 @@ function wrapperInfo(segment) {
   while (i < toks.length && ASSIGN.test(toks[i])) i++;
   if (i >= toks.length) return { bodies: [], opaque: false };
   const carried = carrierBodies(toks, i, segment);
-  const done = (bodies, opaque, evalOpaque = false) => ({ bodies: [...carried, ...bodies.map((text) => ({ text }))], opaque, evalOpaque });
+  const done = (bodies, opaque, evalOpaque = false) => ({
+    bodies: [...carried.filter((c) => c.text !== undefined), ...bodies.map((text) => ({ text }))],
+    opaque: opaque || carried.some((c) => c.opaque),
+    evalOpaque,
+  });
   if (isWrapper(baseName(toks[i]))) {
     // Skip the prefix together with its flags and values, up to the next shell-like token.
     let k = i + 1;

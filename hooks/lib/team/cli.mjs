@@ -1,13 +1,14 @@
 // offlimits team CLI: the glue over config, state, lanes, terminal and init. Node built-ins only.
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commonRoot, repoRoot } from '../git.mjs';
 import { loadPolicy } from '../policy.mjs';
 import { loadTeam } from './config.mjs';
 import { guard } from './guard.mjs';
-import { gitInit, runInit } from './init.mjs';
+import { gitInit, insideGitRepo, isUnsafeInitDir, runInit } from './init.mjs';
 import { LANE_RE, addLane, assertLane, lanePath, laneStatus, pruneLane, removeLane, resolveBase } from './lanes.mjs';
 import { STAGES, ensureTeamDir, readBoard, reserve, updateLane, withLock, writeBoard } from './state.mjs';
 import { claudeInvocation, hasBin, launchSpec, openTerminal, permissionArgs, sessionCommand, teamCommand } from './terminal.mjs';
@@ -37,6 +38,13 @@ const USAGE = `offlimits team <command>
   reserve <key>                                   take the next reserved number
   done <lane> [--abandon]                         remove a merged (or abandoned) lane
   help`;
+
+/** A copy of env without the role, lane and Claude-session variables (case-insensitive on Windows). */
+export function scrubEnv(env, roleEnv, platform = process.platform) {
+  const norm = platform === 'win32' ? (s) => s.toUpperCase() : (s) => s;
+  const drop = new Set([roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID', ...SESSION_ENV].map(norm));
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !drop.has(norm(k))));
+}
 
 class Exit extends Error {
   constructor(code, message) {
@@ -113,6 +121,8 @@ export async function main(argv, deps = {}) {
   const has = deps.has ?? hasBin;
   const now = deps.now ?? Date.now;
   const platform = deps.platform ?? process.platform;
+  const makeGitRepo = deps.gitInit ?? gitInit;
+  const home = deps.homedir ?? os.homedir;
   const out = (s = '') => stdout.write(`${s}\n`);
   const err = (s) => stderr.write(`${s}\n`);
   const stamp = () => new Date(now()).toISOString();
@@ -138,11 +148,12 @@ export async function main(argv, deps = {}) {
     if (!COMMANDS.includes(cmd)) throw new Exit(2, `offlimits team: unknown command "${cmd}"\n${USAGE}`);
 
     let initialisedGit = false;
-    if (cmd === 'init' && !commonRoot(cwd) && !repoRoot(cwd)) {
+    if (cmd === 'init' && !insideGitRepo(cwd, env)) {
       // a human's folder with no repository yet: make one (a worker or subagent is still refused first)
       const refused = guard(cmd, env);
       if (refused) throw new Exit(3, refused);
-      try { gitInit(cwd); } catch (e) { throw new Exit(2, `offlimits team: git init failed in ${cwd} (${e.message})`); }
+      if (isUnsafeInitDir(cwd, home())) throw new Exit(2, `offlimits team: refusing to run git init in ${cwd} (your home directory or a drive root); make a project folder first and run init there`);
+      try { makeGitRepo(cwd); } catch (e) { throw new Exit(2, `offlimits team: git init failed in ${cwd} (${e.message})`); }
       initialisedGit = true;
     }
     const rawRoot = commonRoot(cwd);
@@ -189,7 +200,7 @@ export async function main(argv, deps = {}) {
     const { changed, notes } = runInit(mainRoot, { language: flags.language });
     out(changed.length ? `changed: ${changed.join(', ')}` : 'nothing to change');
     for (const n of notes) out(`note: ${n}`);
-    out("Next: commit these files, then run /offlimits start in Claude (or 'team coordinator' in a terminal).");
+    out("Next: commit these files (git add offlimits.json CLAUDE.md .gitignore .github/pull_request_template.md), then run /offlimits start in Claude (or 'team coordinator' in a terminal).");
     out('Add this line to your shell profile to get a `team` command:');
     out(platform === 'win32' ? `function team { node "${BIN}" @args }` : `team() { node "${BIN}" "$@"; }`);
     return 0;
@@ -269,11 +280,9 @@ export async function main(argv, deps = {}) {
       out(env.CLAUDECODE ? `${stripEnv(command)}  (role is set by the launcher)` : command);
       return 0;
     }
-    const clean = { ...env };
     // The worker is a fresh Claude session: drop our role and the variables the coordinator's session injected.
     // User configuration such as CLAUDE_CODE_USE_BEDROCK or CLAUDE_CODE_GIT_BASH_PATH stays.
-    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID', ...SESSION_ENV]) delete clean[k];
-    open(spec, undefined, clean);
+    open(spec, undefined, scrubEnv(env, roleEnv, platform));
     out(`opened a terminal for ${lane}`);
     return 0;
   }
@@ -302,10 +311,8 @@ export async function main(argv, deps = {}) {
     ensureTeamDir(dir);
     const held = readJson(path.join(dir, 'coordinator.json'));
     if (held && isAlive(held.pid)) throw new Exit(4, `offlimits team: a coordinator is already running (pid ${held.pid}); use 'team coordinator --takeover' in a terminal to replace it`);
-    const clean = { ...env };
     // The new window is human context: drop our role and the variables this session injected.
-    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID', ...SESSION_ENV]) delete clean[k];
-    open(spec, undefined, clean);
+    open(spec, undefined, scrubEnv(env, roleEnv, platform));
     out('opened the coordinator in a new terminal; talk to it there');
     return 0;
   }

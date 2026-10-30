@@ -7,7 +7,7 @@ Team mode turns a repository into a small software team made of ordinary Claude 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
 /offlimits init                       # inside Claude, in your project folder (an empty one is fine)
-git add -A && git commit -m "offlimits init"
+git add offlimits.json CLAUDE.md .gitignore .github/pull_request_template.md && git commit -m "offlimits init"
 /offlimits start                      # a new window opens with the coordinator; talk to it there
 ```
 
@@ -51,7 +51,7 @@ Run as `team <command>` (or `node <plugin>/bin/team.mjs <command>`). Exit codes:
 | Command | Does |
 |---|---|
 | `start [--print]` | Opens a new terminal in the main checkout that runs `node "<bin>/team.mjs" coordinator`, so the coordinator starts in human context. Runs the same checks as `coordinator` (main checkout, valid `team`, exit 4 while a live coordinator exists). `--print`, `terminal: none` or no usable terminal print the command and a `cd` hint instead. Prints `opened the coordinator in a new terminal; talk to it there`. |
-| `init [--language xx]` | In a folder that is not inside a git repository, runs `git init` first. Merges `offlimits.json` (`defaultRole: worker`, and when absent a `team` block with `language` and `permissionMode: bypassPermissions`), the managed block in `CLAUDE.md` between `<!-- offlimits:team:start -->` and `<!-- offlimits:team:end -->`, `.github/pull_request_template.md` if missing, the `.offlimits/` line in `.gitignore`, and `.offlimits/team/`. Prints what changed and the shell function. Re-running changes only the managed parts. |
+| `init [--language xx]` | In a folder that is not inside a git repository, runs `git init` first. Merges `offlimits.json` (`defaultRole: worker`, and when absent a `team` block with `language` and `permissionMode: bypassPermissions`; an existing `team` block is never changed), the managed block in `CLAUDE.md` between `<!-- offlimits:team:start -->` and `<!-- offlimits:team:end -->`, `.github/pull_request_template.md` if missing, the `.offlimits/` line in `.gitignore`, and `.offlimits/team/`. Prints what changed and the shell function. Re-running changes only the managed parts. |
 | `coordinator [--resume] [--takeover] [--print]` | Starts `claude --model <models.coordinator> -n coordinator` in the main checkout with the coordinator role. `--resume` adds `--continue`. Refuses (exit 4) while another live coordinator holds `coordinator.json`, unless `--takeover`. `--print` prints the command instead of running it. |
 | `worker <lane> --brief <file> [--model m] [--night] [--base ref] [--print]` | Checks the lane name and `maxWorkers`, creates the worktree and branch `feat/<lane>` from the base, stores the brief, marks the lane `briefed` and opens a terminal running Claude with the worker role. `--night` prepends `mode: night` to the brief. `--print` prints the command instead of opening a terminal. |
 | `board [--json]` | Lists lanes: stage, ahead/behind, dirty, last commit age, delivery, questions, missing worktree. |
@@ -151,6 +151,8 @@ Tell the coordinator you are leaving. It sends you one combined message with the
 If a terminal could not be opened, the launcher only prints the command; the coordinator is told to say so before you leave.
 
 ### Unattended workers
+
+The gate keeps workers and subagents out of production. The coordinator is fully trusted: it keeps the configured `permissionMode` (bypass for a new team block), and it merges or deploys only on your explicit word, which is a skill rule, not a gate rule. If you want permission prompts on the coordinator, remove `permissionMode` from the `team` block or set it to `default`.
 
 Unattended or night workers need `team.permissionMode` set to `acceptEdits` or `bypassPermissions`: in the default mode a fresh worker session stops at its first permission prompt and waits for someone to answer it. The gate is what keeps that safe, because it runs in every permission mode and still denies a worker anything that touches production. With `permissionMode` left at `default`, the coordinator warns you before you leave.
 

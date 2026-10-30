@@ -11,13 +11,13 @@ Tam dokümantasyon İngilizcedir: [README.md](README.md). Bu sayfa kısa bir öz
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
 /offlimits init                       # Claude içinde, proje klasöründe (boş klasör olur)
-git add -A && git commit -m "offlimits init"
+git add offlimits.json CLAUDE.md .gitignore .github/pull_request_template.md && git commit -m "offlimits init"
 /offlimits start                      # yeni bir pencere koordinatörle açılır; onunla orada konuşun
 ```
 
 Terminal mi tercih edersiniz? `init` bir `team` kabuk fonksiyonu da yazdırır (satırı profilinize ekleyin); `team coordinator`, `/offlimits start` ile aynı işi yapar.
 
-Claude Code 2.1.292 veya üstü ve Node 20 veya üstü gerekir. `init` depoyu ekip deposuna çevirir (klasör git deposu değilse önce `git init` çalıştırır; yeni `team` bloğuna `permissionMode: bypassPermissions` yazar; `offlimits.json`, CLAUDE.md bloğu, PR şablonu, `.offlimits/team/`) ve profilinize ekleyebileceğiniz bir `team` kabuk fonksiyonu yazdırır. İlk adım, depoda açtığınız bir Claude oturumunda `/offlimits init` yazmaktır: eklenti yolunu kendisi bulur ve mutlak yolla yazılmış `team` fonksiyon satırını yazdırır; yazdığı dosyaları commit edin, sonra `/offlimits start` yazın: koordinatörle yeni bir terminal penceresi açılır. (İsterseniz satırı profilinize ekleyip terminalde `team coordinator` da çalıştırabilirsiniz.) Sonraki oturumlarda aynı yol banner'daki `team CLI:` satırında görünür. npm paketi yoktur.
+Claude Code 2.1.292 veya üstü ve Node 20 veya üstü gerekir. `init` depoyu ekip deposuna çevirir (klasör git deposu değilse önce `git init` çalıştırır; yeni `team` bloğuna `permissionMode: bypassPermissions` yazar (kapı işçileri ve alt ajanları production dışında tutar; koordinatör tamamen güvenilirdir, ayarlı `permissionMode` ile çalışır ve yalnızca sizin açık onayınızla birleştirir veya deploy eder, bu bir kapı kuralı değil, skill kuralıdır; koordinatörde izin istemleri isterseniz `permissionMode` satırını silin veya `default` yapın); `offlimits.json`, CLAUDE.md bloğu, PR şablonu, `.offlimits/team/`) ve profilinize ekleyebileceğiniz bir `team` kabuk fonksiyonu yazdırır. İlk adım, depoda açtığınız bir Claude oturumunda `/offlimits init` yazmaktır: eklenti yolunu kendisi bulur ve mutlak yolla yazılmış `team` fonksiyon satırını yazdırır; yazdığı dosyaları commit edin, sonra `/offlimits start` yazın: koordinatörle yeni bir terminal penceresi açılır. (İsterseniz satırı profilinize ekleyip terminalde `team coordinator` da çalıştırabilirsiniz.) Sonraki oturumlarda aynı yol banner'daki `team CLI:` satırında görünür. npm paketi yoktur.
 
 ## Bir gün
 
