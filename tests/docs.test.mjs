@@ -82,7 +82,7 @@ test('docs/incidents.md labels each incident honestly', () => {
   assert.ok((t.match(/Would offlimits have caught it: (yes|partly|no)/gi) ?? []).length >= 5);
 });
 
-test('CHANGELOG has the 0.1.0 entry with every rule', () => {
+test('CHANGELOG has the 0.1.0 entry and mentions every rule', () => {
   const t = read('CHANGELOG.md');
   assert.ok(t.includes('## 0.1.0 - 2026-10-26'));
   for (const id of RULES) assert.ok(t.includes(id), `missing ${id}`);

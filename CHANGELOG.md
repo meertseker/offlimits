@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+Added:
+
+- `team-launch`: a worker or subagent is denied `team worker|done|coordinator|init` (also via `node bin/team.mjs`, `offlimits-team`, `npx`); solo asks for worker, done and coordinator.
+
 ## 0.2.0 - 2026-10-26
 
 Added:
@@ -23,7 +29,6 @@ Rules for `Bash` and `PowerShell` calls:
 - `publish`: `npm`, `pnpm`, `yarn`, `cargo`, `twine`, `gem`, `dotnet nuget` publishing
 - `role-spoof`: assigning the role variable from inside a command
 - `agent-spawn`: a worker starting another agent CLI (ask in solo)
-- `team-launch`: `team worker`, `done`, `coordinator` and `init` (also via `node bin/team.mjs`) from a worker or subagent; ask in solo
 - `git-clean`: `git clean -x|-X`, which also deletes ignored files (ask in solo, deny for workers)
 - `protected-file`: writes to hook config, policy files and the user-level Claude Code settings, through file tools and shell commands (including globs, parent directories, copies, downloads and `git rm`/`git mv`), and any call that mentions `disableAllHooks`
 - `opaque-shell`: shells that read commands from stdin, `eval` of generated text, nesting deeper than 8 levels, and commands too large to inspect in time (over 64 KB, 1000 segments or 200 variables) (ask in solo, deny for workers)

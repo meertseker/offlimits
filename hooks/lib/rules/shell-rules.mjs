@@ -894,21 +894,25 @@ const TEAM_SUBS = new Set(['worker', 'done', 'coordinator', 'init']);
 
 function teamLaunch(c) {
   const { name, args, raws } = c.info;
-  let sub;
+  // bash-style parsing eats backslashes in Windows paths, so look at the raw tokens too
+  const isTeam = (a) => /(^|[\\/])team\.mjs$/i.test(a ?? '');
+  let rest;
   if (name === 'node') {
-    // bash-style parsing eats backslashes in Windows paths, so look at the raw tokens too
-    const isTeam = (a) => /(^|[\\/])team\.mjs$/i.test(a ?? '');
     const i = args.findIndex((a, k) => isTeam(a) || isTeam(raws[k]));
     if (i < 0) return null;
-    sub = args[i + 1];
-  } else if (name === 'team' || name === 'offlimits-team') {
-    sub = args[0];
+    rest = args.slice(i + 1);
+  } else if (name === 'team' || name === 'offlimits-team' || isTeam(name)) {
+    rest = args;
   } else return null;
-  if (!TEAM_SUBS.has(sub)) return null;
-  if (c.ctx.role !== 'worker' && sub === 'init') return null;
+  const sub = rest.find((a) => !a.startsWith('-'));
+  const worker = c.ctx.role === 'worker';
+  // a worker also hits when a launch word follows other arguments (rare false positive: "team board worker")
+  const hit = TEAM_SUBS.has(sub) ? sub : worker ? rest.find((a) => TEAM_SUBS.has(a)) : undefined;
+  if (!hit) return null;
+  if (!worker && hit === 'init') return null;
   return {
-    action: c.ctx.role === 'worker' ? 'deny' : 'ask',
-    reason: `${name} ${sub} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
+    action: worker ? 'deny' : 'ask',
+    reason: `${name} ${hit} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
   };
 }
 
