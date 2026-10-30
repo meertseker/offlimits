@@ -5,6 +5,7 @@ export const OPAQUE_PREFIX = 'offlimits:opaque';
 const OPAQUE_STDIN = `${OPAQUE_PREFIX} shell reads stdin`;
 export const OPAQUE_DEEP = `${OPAQUE_PREFIX} nesting too deep`;
 export const OPAQUE_EVAL = `${OPAQUE_PREFIX} eval of command output`;
+export const OPAQUE_BRACES = `${OPAQUE_PREFIX} unbalanced script block`;
 const MAX_ROUNDS = 8;
 
 /**
@@ -81,11 +82,18 @@ function scan(s, literalBackslash, marks = false, ps = false) {
   let q = null; // active quote char
   let depth = 0; // $( ... ) nesting
   let bt = false; // inside backticks
+  let at = 0; // index of the character being read; items record where they end in out.pos
+  const pos = [];
+  out.pos = pos;
   const flush = () => {
-    if (cur.trim()) out.push(cur.trim());
+    if (cur.trim()) {
+      out.push(cur.trim());
+      pos.push(at);
+    }
     cur = '';
   };
   for (let i = 0; i < s.length; i++) {
+    at = i;
     const c = s[i];
     if (q === "'") {
       if (c === "'") q = null;
@@ -144,7 +152,10 @@ function scan(s, literalBackslash, marks = false, ps = false) {
       flush();
     } else if (c === '(' || c === ')') {
       flush(); // includes grouping parens and <( >( process substitution
-      if (marks) out.push(c === '(' ? OPEN : CLOSE);
+      if (marks) {
+        out.push(c === '(' ? OPEN : CLOSE);
+        pos.push(i);
+      }
     } else if (c === '|') {
       if (s[i + 1] === '|') i++;
       flush();
@@ -161,9 +172,107 @@ function scan(s, literalBackslash, marks = false, ps = false) {
       cur += c;
     }
   }
+  at = s.length;
   flush();
   return out;
 }
+
+/**
+ * Top-level PowerShell script blocks `{ ... }` and hash tables `@{ ... }` of a command, quote-aware
+ * ('...', "..." with backtick escapes and $( ... ) inside, here-strings, ${name}, comments).
+ * Returns { blocks: [{ open, body, hash }], bad } where bad means the braces do not balance
+ * or a quote is left open. Nested blocks are found again when a body is walked.
+ */
+export function psBlocks(text) {
+  const s = String(text ?? '');
+  const n = s.length;
+  const blocks = [];
+  let bad = false;
+  // Skip a quoted string starting at i (s[i] is the quote); returns the index after it, or -1 when unclosed.
+  const skipQuote = (i) => {
+    const q = s[i];
+    if (s[i - 1] === '@' && /[\r\n]/.test(s[i + 1] ?? '')) {
+      // here-string: ends at a line that starts with q@
+      const m = new RegExp('[\\r\\n]' + q + '@').exec(s.slice(i + 1));
+      return m ? i + 1 + m.index + 3 : -1;
+    }
+    for (let j = i + 1; j < n; j++) {
+      const c = s[j];
+      if (q === "'") {
+        if (c === "'") {
+          if (s[j + 1] === "'") j++;
+          else return j + 1;
+        }
+        continue;
+      }
+      if (c === '`') j++;
+      else if (c === '"') {
+        if (s[j + 1] === '"') j++;
+        else return j + 1;
+      } else if (c === '$' && s[j + 1] === '(') {
+        const e = skipCode(j + 2, ')');
+        if (e === -1) return -1;
+        j = e - 1;
+      }
+    }
+    return -1;
+  };
+  // Skip code up to the matching close char; returns the index after it, or -1.
+  const skipCode = (i, close) => {
+    const stack = [close];
+    for (let j = i; j < n; j++) {
+      const c = s[j];
+      if (c === '`') j++;
+      else if (c === "'" || c === '"') {
+        const e = skipQuote(j);
+        if (e === -1) return -1;
+        j = e - 1;
+      } else if (c === '(') stack.push(')');
+      else if (c === '{') stack.push('}');
+      else if (c === ')' || c === '}') {
+        if (stack.pop() !== c) return -1;
+        if (!stack.length) return j + 1;
+      }
+    }
+    return -1;
+  };
+  const stack = [];
+  for (let i = 0; i < n && !bad; i++) {
+    const c = s[i];
+    if (c === '`') i++;
+    else if (c === "'" || c === '"') {
+      const e = skipQuote(i);
+      if (e === -1) {
+        // an unclosed quote runs to the end; only a brace in or before it makes the blocks unknown
+        bad = stack.length > 0 || /[{}]/.test(s.slice(i));
+        break;
+      }
+      i = e - 1;
+    } else if (c === '$' && s[i + 1] === '{') {
+      const e = s.indexOf('}', i + 2);
+      if (e === -1) bad = true;
+      else i = e;
+    } else if (c === '<' && s[i + 1] === '#') {
+      const e = s.indexOf('#>', i + 2);
+      if (e === -1) bad = true;
+      else i = e + 1;
+    } else if (c === '#' && (i === 0 || /[\s;|&({]/.test(s[i - 1]))) {
+      const e = s.slice(i).search(/[\r\n]/);
+      i = e === -1 ? n : i + e;
+    } else if (c === '{') stack.push({ open: i, hash: s[i - 1] === '@' });
+    else if (c === '}') {
+      const b = stack.pop();
+      if (!b) bad = true;
+      else if (!stack.length) blocks.push({ open: b.open, body: s.slice(b.open + 1, i), hash: b.hash });
+    }
+  }
+  if (stack.length) bad = true;
+  return { blocks, bad };
+}
+
+// Hash-table entry key (k =, 'k' =, "k" =) and values that are plain literals, not commands.
+const HASH_KEY = /^\s*(?:[\w.-]+|'[^']*'|"[^"]*")\s*=(?!=)\s*/;
+const PS_LITERAL = /^(?:'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*"|[-+]?\d[\w.]*|\$(?:true|false|null))$/i;
 
 // Leading shell keywords / grouping tokens that are not part of the command itself.
 const NOISE_WORDS = [/[{}!]/y, /time\s+-p/y, /(?:then|do|else|elif|if|while|until|time)/y];
@@ -386,9 +495,11 @@ export function stripAssignments(segment) {
   return { assignments, rest: s.slice(i).trim() };
 }
 
-/** Bodies of $(...) and `...` found outside single quotes (outermost only). */
+/** Bodies of $(...) and `...` found outside single quotes (outermost only); out.ticks holds the indexes of backtick bodies. */
 function substitutions(s) {
   const out = [];
+  const ticks = new Set();
+  out.ticks = ticks;
   let q = null;
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
@@ -423,6 +534,7 @@ function substitutions(s) {
       const end = s.indexOf('`', i + 1);
       const stop = end === -1 ? s.length : end;
       out.push(s.slice(i + 1, stop));
+      ticks.add(out.length - 1);
       i = stop;
     }
   }
@@ -1175,14 +1287,29 @@ export function expandWithState(command, budget = {}, { ps = false } = {}) {
   return out;
 }
 
-function walk(text, state0, depth, w, ps = false) {
+// tick: text is a backtick body; in PowerShell a backtick is an escape, so braces there need not balance
+function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
   const { emit } = w;
   const passes = [scan(text, false, true, ps)];
   if (text.includes('\\')) passes.push(scan(text, true, true, ps));
+  // PowerShell script blocks and hash tables: their bodies are commands too (the outer text is still checked)
+  const blk = ps ? psBlocks(text) : { blocks: [], bad: false };
+  if (blk.bad && !tick) emit(OPAQUE_BRACES, state0);
   for (const items of passes) {
     let st = state0;
     const stack = [];
-    for (const it of items) {
+    let bi = 0;
+    const blocksBefore = (end) => {
+      for (; bi < blk.blocks.length && blk.blocks[bi].open < end; bi++) {
+        const b = blk.blocks[bi];
+        if (!b.body.trim()) continue;
+        if (depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
+        else walk(b.body, st, depth + 1, w, true, b.hash);
+      }
+    };
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k];
+      blocksBefore(items.pos[k]);
       if (it === OPEN) {
         stack.push(st);
         continue;
@@ -1192,17 +1319,21 @@ function walk(text, state0, depth, w, ps = false) {
         continue;
       }
       // PowerShell: `$p = git push`, `[void](...)`, `. git push` run the command after the lead-in
-      const raw = clean(it);
+      let raw = clean(it);
+      if (hash) {
+        raw = raw.replace(HASH_KEY, '').trim();
+        if (PS_LITERAL.test(raw)) continue;
+      }
       const seg = ps ? psLead(raw) : raw;
       if (!seg) continue;
       if (emit(seg, st) && !seg.startsWith(OPAQUE_PREFIX)) {
         const info = wrapperInfo(seg);
-        const bodies = [...info.bodies, ...substitutions(seg).map((b) => ({ text: b }))];
+        const bodies = [...info.bodies, ...substitutions(seg).map((b, k, all) => ({ text: b, tick: all.ticks.has(k) }))];
         if (bodies.length && depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
         else {
           for (const b of bodies) {
             const cwd = b.cwdUnknown ? null : b.chdir !== undefined ? joinCwd(st.cwd, b.chdir) : st.cwd;
-            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w, b.ps ?? ps);
+            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w, b.ps ?? ps, false, b.tick);
           }
         }
         if (info.opaque) emit(OPAQUE_STDIN, st);
@@ -1212,5 +1343,6 @@ function walk(text, state0, depth, w, ps = false) {
       st = nextState(raw, st, w);
       if (seg !== raw) st = nextState(seg, st, w);
     }
+    blocksBefore(Infinity);
   }
 }
