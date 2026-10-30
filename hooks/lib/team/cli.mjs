@@ -253,7 +253,9 @@ export async function main(argv, deps = {}) {
       return 0;
     }
     const clean = { ...env };
-    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID']) delete clean[k];
+    // The worker is a fresh Claude session: drop our role and the coordinator's Claude session variables.
+    for (const k of [roleEnv, 'OFFLIMITS_ROLE', 'OFFLIMITS_LANE', 'OFFLIMITS_TEAM_LAUNCHER_PID', 'CLAUDECODE', 'CLAUDE_PID', 'AI_AGENT']) delete clean[k];
+    for (const k of Object.keys(clean)) if (k.startsWith('CLAUDE_CODE_')) delete clean[k];
     open(spec, undefined, clean);
     out(`opened a terminal for ${lane}`);
     return 0;

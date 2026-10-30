@@ -457,11 +457,11 @@ test('coordinator child env uses the configured roleEnv; terminal env is scrubbe
     assert.equal(f.calls.spawn[0].env.MY_ROLE, 'coordinator');
     const seen = [];
     const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md')], {
-      env: { KEEP: '1', MY_ROLE: 'x', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1' },
+      env: { KEEP: '1', MY_ROLE: 'coordinator', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1', CLAUDECODE: '1', CLAUDE_PID: '9', AI_AGENT: 'claude', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SSE_PORT: '1', CLAUDE_CONFIG_DIR: 'keep' },
       extra: { openTerminal: (spec, fn, env) => seen.push({ spec, fn, env }) },
     });
     assert.equal(w.code, 0, w.err);
-    assert.deepEqual(seen[0].env, { KEEP: '1' });
+    assert.deepEqual(seen[0].env, { KEEP: '1', CLAUDE_CONFIG_DIR: 'keep' });
     assert.ok(seen[0].spec.args.join(' ').includes('MY_ROLE'));
   } finally { f.cleanup(); }
 });
