@@ -76,3 +76,20 @@ test('no team dir means no team section', () => {
   fs.rmSync(path.join(dir, '.offlimits'), { recursive: true });
   assert.doesNotMatch(run(dir, { OFFLIMITS_ROLE: 'worker', OFFLIMITS_LANE: 'demo' }).stdout, /worker demo|team CLI/);
 });
+
+test('a worker by defaultRole with no lane gets the solo team lines', () => {
+  const out = teamBanner({ ...base, role: 'worker', lane: null, viaDefault: true });
+  assert.doesNotMatch(out, /worker without a lane/);
+  assert.match(out, /^This is a team repo\. Start the coordinator from a terminal with: team coordinator$/m);
+  assert.match(out, /^team CLI: node /m);
+  assert.match(teamBanner({ ...base, role: 'worker', lane: null, viaDefault: false }), /worker without a lane/);
+});
+
+test('the human\'s plain claude session in an init-ed repo shows the solo team line', () => {
+  const dir = teamRepo();
+  fs.writeFileSync(path.join(dir, 'offlimits.json'), JSON.stringify({ defaultRole: 'worker', team: {} }));
+  const r = run(dir, {});
+  assert.match(r.stdout, /This is a team repo\. Start the coordinator from a terminal with: team coordinator/);
+  assert.match(r.stdout, /team CLI: node ".*team\.mjs"/);
+  assert.doesNotMatch(r.stdout, /worker without a lane/);
+});

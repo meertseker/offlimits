@@ -105,7 +105,8 @@ export function teamBanner(f) {
       if (fit < lanes.length) lines.push(`  ...and ${lanes.length - fit} more`);
     }
     lines.push(...tail);
-  } else if (f.role === 'worker') {
+  } else if (f.role === 'worker' && (f.lane || !f.viaDefault)) {
+    // A worker only by defaultRole and without a lane is the human's own session: show the solo lines.
     if (f.lane) {
       lines.push(
         `You are worker ${f.lane}. Brief: ${f.briefPath ?? 'none'}. Stage: ${f.stage ?? 'unknown'}. Next: ${STAGE_NEXT[f.stage] ?? 'ask the coordinator'}`,

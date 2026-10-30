@@ -21,7 +21,7 @@ function readText(p) {
 }
 
 /** Team section, or '' when this is not a team repo. Never throws. */
-function teamSection(cwd, role) {
+function teamSection(cwd, role, viaDefault) {
   try {
     const dir = teamDir(cwd);
     if (!dir || !fs.existsSync(dir)) return '';
@@ -37,6 +37,7 @@ function teamSection(cwd, role) {
     const cli = `team CLI: node "${fileURLToPath(new URL('../bin/team.mjs', import.meta.url))}" <command>`;
     return '\n' + teamBanner({
       role,
+      viaDefault,
       lane,
       board,
       deliveriesWaiting: live.filter(([, l]) => l.stage === 'delivered').map(([n]) => n),
@@ -72,7 +73,7 @@ try {
       branch: currentBranch(cwd),
       policySource: source,
       problems,
-    }) + teamSection(cwd, role) + '\n',
+    }) + teamSection(cwd, role, viaDefault) + '\n',
   );
 } catch {
   /* a banner must never break a session */
