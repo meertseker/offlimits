@@ -237,7 +237,9 @@ export async function main(argv, deps = {}) {
           delete board.lanes[lane];
           writeBoard(dir, board);
         });
-      } catch { /* placeholder stays; board shows it as creating */ }
+      } catch {
+        err(`offlimits team: lane ${lane} is stuck in "creating"; run: team done ${lane} --abandon`);
+      }
       if (extra) err(`offlimits team:${extra}`);
       throw e;
     }

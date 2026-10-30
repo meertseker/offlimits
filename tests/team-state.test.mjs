@@ -162,3 +162,51 @@ test('reserve refuses an unreadable reservations.json and keeps it', () => {
   assert.throws(() => reserve(d, 'k', {}), /reservations\.json is unreadable; fix or delete it/);
   assert.equal(fs.readFileSync(f, 'utf8'), '{not json');
 });
+
+const staleToken = (ageMs = 60000) => `4242-${Date.now() - ageMs}-deadbeef`;
+
+test('4 processes contending on a stale lock never overlap and all finish', async () => {
+  const d = tmp();
+  fs.writeFileSync(path.join(d, 'lock'), staleToken());
+  const log = path.join(d, 'log.txt');
+  const code = `import(${JSON.stringify(STATE_URL)}).then(m=>{const fs=require('node:fs');
+    for(let i=0;i<5;i++)m.withLock(${JSON.stringify(d)},()=>{fs.appendFileSync(${JSON.stringify(log)},'enter|');
+      const t=Date.now();while(Date.now()-t<10);fs.appendFileSync(${JSON.stringify(log)},'exit|')},{timeoutMs:20000});
+    console.log('ok')})`;
+  const run = () => new Promise((resolve, reject) => {
+    const c = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    c.stdout.on('data', (b) => { out += b; });
+    c.on('close', (n) => (n === 0 ? resolve(out.trim()) : reject(new Error('child exit ' + n))));
+  });
+  const res = await Promise.all([run(), run(), run(), run()]);
+  assert.deepEqual(res, ['ok', 'ok', 'ok', 'ok']);
+  const lines = fs.readFileSync(log, 'utf8').split('|').filter(Boolean);
+  assert.equal(lines.length, 40);
+  lines.forEach((l, i) => assert.equal(l, i % 2 === 0 ? 'enter' : 'exit'));
+  assert.ok(!fs.existsSync(path.join(d, 'lock')) && !fs.existsSync(path.join(d, 'lock.break')));
+});
+
+test('a breaker never deletes a lock that was re-created after it observed the stale one', () => {
+  const d = tmp();
+  const lock = path.join(d, 'lock');
+  fs.writeFileSync(lock, staleToken());
+  const fresh = `999-${Date.now()}-cafebabe`;
+  assert.throws(() => withLock(d, () => 1, {
+    timeoutMs: 300,
+    hooks: { afterObserve: () => fs.writeFileSync(lock, fresh) },
+  }), /locked/);
+  assert.equal(fs.readFileSync(lock, 'utf8'), fresh);
+  assert.ok(!fs.existsSync(path.join(d, 'lock.break')));
+});
+
+test('a stale lock.break is cleared and a live one is respected', () => {
+  const d = tmp();
+  fs.writeFileSync(path.join(d, 'lock'), staleToken());
+  fs.writeFileSync(path.join(d, 'lock.break'), staleToken(120000));
+  assert.equal(withLock(d, () => 5, { timeoutMs: 3000 }), 5);
+  fs.writeFileSync(path.join(d, 'lock'), staleToken());
+  fs.writeFileSync(path.join(d, 'lock.break'), `1-${Date.now()}-aa`);
+  assert.throws(() => withLock(d, () => 1, { timeoutMs: 200 }), /locked/);
+  assert.ok(fs.existsSync(path.join(d, 'lock.break')));
+});

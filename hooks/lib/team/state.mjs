@@ -23,46 +23,75 @@ function readToken(p) {
   try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
 }
 
+/** Age in ms of a lock file: from the timestamp inside its token, else its mtime. */
+function lockAge(p, content) {
+  const m = /^\d+-(\d{10,})-[0-9a-f]+$/.exec(content || '');
+  if (m) return Date.now() - Number(m[1]);
+  try { return Date.now() - fs.statSync(p).mtimeMs; } catch { return 0; }
+}
+
+function tryCreate(p, token) {
+  const fd = fs.openSync(p, 'wx');
+  try { fs.writeSync(fd, token); } finally { fs.closeSync(fd); }
+}
+
+const BUSY = ['EEXIST', 'EPERM', 'EACCES'];
+
 /**
- * Synchronous exclusive lock on `dir/lock`. The lock file holds a unique token; release deletes it only if it
- * still holds ours. A lock older than staleMs is broken by renaming it aside (only one waiter wins the rename).
+ * Remove the stale lock whose token we observed. Never moves or deletes a lock that might be live:
+ * only the holder of `lock.break` may remove `lock`, and only if it still holds the stale token we saw.
  */
-export function withLock(dir, fn, { timeoutMs = 2000, staleMs = 10000 } = {}) {
-  fs.mkdirSync(dir, { recursive: true });
-  const p = path.join(dir, 'lock');
-  const token = process.pid + '-' + randomBytes(8).toString('hex');
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const fd = fs.openSync(p, 'wx');
-      try { fs.writeSync(fd, token); } finally { fs.closeSync(fd); }
-      break;
-    } catch (e) {
-      if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EACCES') throw e;
-      try {
-        if (Date.now() - fs.statSync(p).mtimeMs > staleMs) {
-          const seen = readToken(p);
-          const aside = p + '.stale-' + token;
-          fs.renameSync(p, aside);
-          // We may have renamed a fresh lock that replaced the stale one between stat and rename: put it back.
-          let fresh = false;
-          try { fresh = Date.now() - fs.statSync(aside).mtimeMs <= staleMs || readToken(aside) !== seen; } catch { /* gone */ }
-          if (fresh && !fs.existsSync(p)) {
-            try { fs.renameSync(aside, p); } catch { fs.rmSync(aside, { force: true }); }
-          } else {
-            fs.rmSync(aside, { force: true });
-          }
-          continue;
-        }
-      } catch { /* lock vanished or lost the rename: retry */ }
-      if (Date.now() >= deadline) throw new Error('team state is locked');
-      sleep(25);
-    }
+function breakStale(p, seen, token, breakStaleMs, hooks) {
+  if (hooks && hooks.afterObserve) hooks.afterObserve();
+  const bp = p + '.break';
+  try {
+    tryCreate(bp, token);
+  } catch (e) {
+    if (!BUSY.includes(e.code)) throw e;
+    const held = readToken(bp);
+    if (held !== null && lockAge(bp, held) > breakStaleMs && readToken(bp) === held) fs.rmSync(bp, { force: true });
+    return;
   }
   try {
-    return fn();
+    if (readToken(p) === seen) fs.rmSync(p, { force: true });
   } finally {
-    try { if (readToken(p) === token) fs.rmSync(p, { force: true }); } catch { /* best effort */ }
+    if (readToken(bp) === token) fs.rmSync(bp, { force: true });
+  }
+}
+
+/**
+ * Synchronous exclusive lock on `dir/lock`. The file holds a token `<pid>-<ms>-<random>`; release deletes it only
+ * if it still holds ours. A lock older than staleMs is broken through `lock.break` (see breakStale).
+ */
+export function withLock(dir, fn, { timeoutMs = 2000, staleMs = 10000, breakStaleMs = 30000, hooks } = {}) {
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'lock');
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const token = process.pid + '-' + Date.now() + '-' + randomBytes(8).toString('hex');
+    let got = false;
+    try {
+      tryCreate(p, token);
+      got = true;
+    } catch (e) {
+      if (!BUSY.includes(e.code)) throw e;
+    }
+    if (got) {
+      try {
+        return fn();
+      } finally {
+        try { if (readToken(p) === token) fs.rmSync(p, { force: true }); } catch { /* best effort */ }
+      }
+    }
+    const seen = readToken(p);
+    if (seen !== null && lockAge(p, seen) > staleMs) {
+      breakStale(p, seen, token, breakStaleMs, hooks);
+      if (Date.now() >= deadline) throw new Error('team state is locked');
+      sleep(5);
+      continue;
+    }
+    if (Date.now() >= deadline) throw new Error('team state is locked');
+    sleep(25);
   }
 }
 
