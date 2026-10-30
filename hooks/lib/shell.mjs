@@ -77,7 +77,7 @@ const CLOSE = Symbol('close');
  * character (Windows paths such as "C:\repo\" must not swallow the closing quote).
  * With marks, grouping parentheses are reported as OPEN / CLOSE items.
  */
-function scan(s, literalBackslash, marks = false, ps = false) {
+function scan(s, literalBackslash, marks = false, ps = false, here = true) {
   const out = [];
   let cur = '';
   let q = null; // active quote char
@@ -141,7 +141,7 @@ function scan(s, literalBackslash, marks = false, ps = false) {
           continue;
         }
       }
-      const hc = c === '@' && (s[i + 2] === '\n' || s[i + 2] === '\r') ? psQuoteClass(s[i + 1]) : null;
+      const hc = here && c === '@' && (s[i + 2] === '\n' || s[i + 2] === '\r') ? psQuoteClass(s[i + 1]) : null;
       if (hc && !noHereEnd.has(hc)) {
         const e = psSkipQuote(s, i + 1);
         if (e < 0) noHereEnd.add(hc);
@@ -232,10 +232,10 @@ const TOO_DEEP = -2;
  * Skip a PowerShell quoted string starting at s[i] (a quote of either class, or a here-string after @); returns the
  * index after it, -1 when unclosed, TOO_DEEP past PS_MAX_NEST nested subexpressions.
  */
-function psSkipQuote(s, i, lvl = 0) {
+function psSkipQuote(s, i, lvl = 0, here = true) {
   const n = s.length;
   const cls = psQuoteClass(s[i]);
-  if (s[i - 1] === '@' && (s[i + 1] === '\n' || s[i + 1] === '\r')) {
+  if (here && s[i - 1] === '@' && (s[i + 1] === '\n' || s[i + 1] === '\r')) {
     // here-string: ends at a line that starts with a quote of the same class and @
     for (let j = i + 1; j < n - 2; j++) {
       if ((s[j] === '\n' || s[j] === '\r') && cls.includes(s[j + 1]) && s[j + 2] === '@') return j + 3;
@@ -256,7 +256,7 @@ function psSkipQuote(s, i, lvl = 0) {
       if (s[j + 1] !== undefined && cls.includes(s[j + 1])) j++;
       else return j + 1;
     } else if (c === '$' && s[j + 1] === '(') {
-      const e = psSkipCode(s, j + 2, ')', lvl + 1);
+      const e = psSkipCode(s, j + 2, ')', lvl + 1, here);
       if (e < 0) return e;
       j = e - 1;
     }
@@ -265,14 +265,14 @@ function psSkipQuote(s, i, lvl = 0) {
 }
 
 /** Skip PowerShell code up to the matching close char; returns the index after it, -1, or TOO_DEEP. */
-function psSkipCode(s, i, close, lvl) {
+function psSkipCode(s, i, close, lvl, here = true) {
   if (lvl > PS_MAX_NEST) return TOO_DEEP;
   const stack = [close];
   for (let j = i; j < s.length; j++) {
     const c = s[j];
     if (c === '`') j++;
     else if (psQuoteClass(c)) {
-      const e = psSkipQuote(s, j, lvl);
+      const e = psSkipQuote(s, j, lvl, here);
       if (e < 0) return e;
       j = e - 1;
     } else if (c === '(') stack.push(')');
@@ -300,7 +300,7 @@ function psLineCommentEnd(s, i) {
  * or a quote is left open, and deep that subexpressions nest deeper than PS_MAX_NEST.
  * Nested blocks are found again when a body is walked.
  */
-export function psBlocks(text) {
+export function psBlocks(text, here = true) {
   const s = String(text ?? '');
   const n = s.length;
   const blocks = [];
@@ -311,7 +311,7 @@ export function psBlocks(text) {
     const c = s[i];
     if (c === '`') i++;
     else if (psQuoteClass(c)) {
-      const e = psSkipQuote(s, i);
+      const e = psSkipQuote(s, i, 0, here);
       if (e === TOO_DEEP) {
         deep = bad = true;
         break;
@@ -351,7 +351,7 @@ export function psBlocks(text) {
  * Each entry is { key, value } split at its first top-level `=`, or { key: null, value } when it has none.
  * Returns null when the body cannot be read (a quote or comment left open, nesting too deep).
  */
-function psHashEntries(body) {
+function psHashEntries(body, here = true) {
   const s = String(body);
   const n = s.length;
   const entries = [];
@@ -376,7 +376,7 @@ function psHashEntries(body) {
       continue;
     }
     if (psQuoteClass(c)) {
-      const e = psSkipQuote(s, i);
+      const e = psSkipQuote(s, i, 0, here);
       if (e < 0) return null;
       i = e - 1;
       last = c;
@@ -416,6 +416,8 @@ function psHashEntries(body) {
 
 // Hash-table keys that are plain words or quoted literals (nothing evaluated), and values that are plain literals.
 const PS_SIMPLE_KEY = /^(?:[\w.-]+|'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*")$/;
+// @ and a quote at a line end: a here-string, or a plain quote after @ (x@", a=@")
+const PS_HERE_OPENER = /@["'\u2018-\u201E][\r\n]/;
 const PS_HASH_KEY = /^\s*(?:[\w.-]+|'(?:[^']|'')*'|"(?:[^"`]|`.|"")*")\s*=(?!=)\s*/;
 const PS_LITERAL = /^(?:'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*"|[-+]?\d[\w.]*|\$(?:true|false|null))$/i;
 
@@ -995,7 +997,8 @@ function protectSemicolons(s) {
   return out;
 }
 
-const CMD_IF_UNARY = new Set(['exist', 'defined', 'errorlevel', 'cmdextversion']);
+const CMD_MAX_LEADINS = 64;
+const CMD_IF_UNARY =new Set(['exist', 'defined', 'errorlevel', 'cmdextversion']);
 const CMD_IF_OPS = new Set(['==', 'equ', 'neq', 'lss', 'leq', 'gtr', 'geq']);
 
 /** The text after a cmd `if` condition: `if [/i] [not] (exist x | defined x | errorlevel n | a==b | a op b)`. */
@@ -1070,7 +1073,8 @@ function cmdBodies(body) {
     let w;
     let next;
     // lead-ins that still run the command after them: @, start ..., call, if <condition>, else, for ... do, cmd /c|/k
-    for (let guard = 0; guard < 64; guard++) {
+    let guard = 0;
+    for (; guard < CMD_MAX_LEADINS; guard++) {
       p = p.replace(/^[\s@]+/, '');
       [w, next] = readWord(p, 0, true);
       const low = w.replace(/"/g, '').toLowerCase();
@@ -1096,6 +1100,11 @@ function cmdBodies(body) {
         continue;
       }
       break;
+    }
+    if (guard >= CMD_MAX_LEADINS) {
+      // more lead-ins than we follow: what runs after them is not known
+      out.push(OPAQUE_DEEP);
+      continue;
     }
     if (!w || !isWt(w)) {
       // the command after the lead-ins (cmd /c "if 1==1 git push origin main", "call git push", "@git push")
@@ -1530,16 +1539,23 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
     walkHash(text, state0, depth, w);
     return;
   }
-  const passes = [scan(text, false, true, ps)];
-  if (text.includes('\\')) passes.push(scan(text, true, true, ps));
-  // PowerShell script blocks and hash tables: their bodies are commands too (the outer text is still checked)
-  const blk = ps ? psBlocks(text) : { blocks: [], bad: false, deep: false };
-  if (blk.deep) emit(OPAQUE_DEEP, state0);
-  else if (blk.bad && !tick) emit(OPAQUE_BRACES, state0);
+  // PowerShell reads @"<newline> as a here-string only where a word starts in expression position; x@" or a=@" is a
+  // plain quote. Text that could be either is read both ways (like the two backslash readings) and both are checked.
+  const readings = ps && PS_HERE_OPENER.test(text) ? [true, false] : [true];
+  const passes = [];
+  for (const here of readings) {
+    // PowerShell script blocks and hash tables: their bodies are commands too (the outer text is still checked)
+    const blk = ps ? psBlocks(text, here) : { blocks: [], bad: false, deep: false };
+    if (blk.deep) emit(OPAQUE_DEEP, state0);
+    else if (blk.bad && !tick) emit(OPAQUE_BRACES, state0);
+    passes.push({ items: scan(text, false, true, ps, here), blk });
+    if (text.includes('\\')) passes.push({ items: scan(text, true, true, ps, here), blk });
+  }
   // Each block is walked once per state it is reached with: both scan passes reach the same blocks, and walking
   // them again in the second pass would double the work at every nesting level.
   const walked = new Set();
-  for (const items of passes) {
+  const after = new Map(); // item (place, state, text) -> state after it
+  for (const { items, blk } of passes) {
     let st = state0;
     const stack = [];
     let bi = 0;
@@ -1547,7 +1563,8 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
       for (; bi < blk.blocks.length && blk.blocks[bi].open < end; bi++) {
         const b = blk.blocks[bi];
         if (!b.body.trim()) continue;
-        const key = `${bi}\0${st.cwd}\0${st.id}`;
+        // the same block (same place, same body) in another reading or pass is not walked again
+        const key = `${b.open}\0${b.body.length}\0${b.hash}\0${st.cwd}\0${st.id}`;
         if (walked.has(key)) continue;
         walked.add(key);
         if (depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
@@ -1566,6 +1583,13 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
       }
       if (it === CLOSE) {
         if (stack.length) st = stack.pop();
+        continue;
+      }
+      // An item another pass or reading already handled (same place, same text, same state) gives the same result.
+      const memoKey = `${items.pos[k]}\0${st.cwd}\0${st.id}\0${it}`;
+      const memo = after.get(memoKey);
+      if (memo) {
+        st = memo;
         continue;
       }
       // PowerShell: `$p = git push`, `[void](...)`, `. git push` run the command after the lead-in
@@ -1593,6 +1617,7 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
       // the lead-in may itself set a variable ($b = 'main'); the command after it may change directory
       st = nextState(raw, st, w);
       if (seg !== raw) st = nextState(seg, st, w);
+      after.set(memoKey, st);
     }
     blocksBefore(Infinity);
   }
@@ -1604,13 +1629,22 @@ function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
  * be split into entries, is checked as a command and is also opaque.
  */
 function walkHash(text, st, depth, w) {
-  const entries = psHashEntries(text);
-  if (!entries) {
-    walk(text, st, depth, w, true, 'items');
-    w.emit(OPAQUE_HASH, st);
-    return;
+  const readings = PS_HERE_OPENER.test(text) ? [true, false] : [true];
+  const all = [];
+  for (const here of readings) {
+    const entries = psHashEntries(text, here);
+    if (!entries) {
+      walk(text, st, depth, w, true, 'items');
+      w.emit(OPAQUE_HASH, st);
+      return;
+    }
+    all.push(...entries);
   }
-  for (const { key, value } of entries) {
+  const done = new Set();
+  for (const { key, value } of all) {
+    const k = `${key}\0${value}`;
+    if (done.has(k)) continue;
+    done.add(k);
     if (key === null) {
       walk(value, st, depth, w, true);
       // one word without = (stash@{0}, @{u}) is a string or a parse error, never a command line
