@@ -546,3 +546,46 @@ test('a lane stuck in "creating" can be abandoned, with or without git leftovers
     assert.equal(lanes.bare.stage, 'abandoned');
   } finally { f.cleanup(); }
 });
+
+test('done --abandon prints the branch tip so the abandon can be undone', async () => {
+  const f = fixture();
+  try {
+    await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    const wt = path.join(f.tmp, 'repo-demo');
+    fs.writeFileSync(path.join(wt, 'new.txt'), 'n');
+    git(wt, 'add', '.');
+    git(wt, 'commit', '-m', 'work');
+    const sha = git(f.root, 'rev-parse', 'feat/demo');
+    const r = await f.run(['done', 'demo', '--abandon']);
+    assert.equal(r.code, 0, r.err);
+    assert.ok(r.out.includes(`git branch feat/demo ${sha}`), r.out);
+  } finally { f.cleanup(); }
+});
+
+test('done tells the human to close the worker session when the worktree cannot be removed', async () => {
+  const f = fixture();
+  try {
+    await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    const busy = () => { throw new Error("Command failed: git worktree remove --force -- x\nerror: failed to delete 'x': Permission denied"); };
+    const r = await f.run(['done', 'demo', '--abandon'], { extra: { removeLane: busy } });
+    assert.equal(r.code, 1);
+    assert.match(r.err, /close the worker session in demo first, then re-run team done demo/);
+    assert.ok(!/Permission denied/.test(r.err), r.err);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes.demo.stage, 'briefed');
+  } finally { f.cleanup(); }
+});
+
+test('re-running done after a half-finished worktree remove finishes the job', async () => {
+  const f = fixture();
+  try {
+    await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    const wt = path.join(f.tmp, 'repo-demo');
+    // what a failed `git worktree remove` on Windows leaves: git's record gone, an empty folder still there
+    for (const n of fs.readdirSync(wt)) fs.rmSync(path.join(wt, n), { recursive: true, force: true });
+    git(f.root, 'worktree', 'prune');
+    const r = await f.run(['done', 'demo', '--abandon']);
+    assert.equal(r.code, 0, r.err);
+    assert.ok(!fs.existsSync(wt));
+    assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
+  } finally { f.cleanup(); }
+});

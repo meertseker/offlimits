@@ -407,17 +407,43 @@ export async function main(argv, deps = {}) {
     return 0;
   }
 
+  function isWorktree(mainRoot, dir) {
+    const norm = (p) => (platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+    return worktrees(mainRoot).map(norm).includes(norm(dir));
+  }
+
+  function branchTip(mainRoot, branch) {
+    try {
+      return execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: mainRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim() || null;
+    } catch { return null; }
+  }
+
+  /** git refuses to remove a worktree a running session still holds open (Windows): say what to do instead of git's error. */
+  function removeOrExplain(lane, fn, worktree) {
+    try { fn(); } catch (e) {
+      if (fs.existsSync(worktree)) throw new Exit(1, `offlimits team: could not remove ${worktree}; close the worker session in ${lane} first, then re-run team done ${lane}`);
+      throw e;
+    }
+  }
+
+  function undoLine(branch, tip) {
+    return tip ? `undo with: git branch ${branch} ${tip}` : null;
+  }
+
   /** Abandon a lane whose board record never got a branch/worktree: clean up what git knows by the lane's own names. */
   function abandonPartial(lane, { mainRoot, team, dir }) {
     const rec = { branch: `feat/${lane}`, worktree: lanePath(mainRoot, team, lane) };
-    if (worktrees(mainRoot).includes(path.resolve(rec.worktree))) {
-      execFileSync('git', ['worktree', 'remove', '--force', '--', rec.worktree], { cwd: mainRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const tip = branchTip(mainRoot, rec.branch);
+    if (isWorktree(mainRoot, rec.worktree)) {
+      removeOrExplain(lane, () => execFileSync('git', ['worktree', 'remove', '--force', '--', rec.worktree], { cwd: mainRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }), rec.worktree);
     } else if (fs.existsSync(rec.worktree)) {
       err(`offlimits team: ${rec.worktree} exists but git does not know it as a worktree; left in place`);
     }
     pruneLane(mainRoot, rec);
     updateLane(dir, lane, { stage: 'abandoned', note: undefined });
     out(`lane ${lane}: abandoned (record had no branch or worktree; removed what git knew)`);
+    const undo = undoLine(rec.branch, tip);
+    if (undo) out(undo);
     return 0;
   }
 
@@ -433,19 +459,27 @@ export async function main(argv, deps = {}) {
       if (!flags.abandon) throw e;
       return abandonPartial(lane, { mainRoot, team, dir });
     }
+    const tip = branchTip(mainRoot, rec.branch);
     if (!flags.abandon) {
       const st = laneStatus(mainRoot, rec, rec.base ?? resolveBase(mainRoot, team.base));
       if (st.dirty) throw new Exit(1, `offlimits team: lane ${lane} has uncommitted changes; commit or use --abandon`);
-      let tip = null;
-      try { tip = execFileSync('git', ['rev-parse', rec.branch], { cwd: mainRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); } catch { /* unknown */ }
       if (rec.startSha && tip === rec.startSha) throw new Exit(1, `offlimits team: lane ${lane} has no commits; use --abandon to drop it`);
       if (!st.merged) throw new Exit(1, `offlimits team: lane ${lane} is not merged into the base; merge it, or use --abandon to discard it`);
     }
-    if (fs.existsSync(rec.worktree)) removeLane(mainRoot, rec, { force: true });
-    else pruneLane(mainRoot, rec);
+    if (isWorktree(mainRoot, rec.worktree)) removeOrExplain(lane, () => (deps.removeLane ?? removeLane)(mainRoot, rec, { force: true }), rec.worktree);
+    else {
+      // Folder deleted by hand, or left behind (empty) by a remove that failed half-way: prune git's record.
+      pruneLane(mainRoot, rec);
+      try { fs.rmdirSync(rec.worktree); } catch { /* gone, or not empty: left in place */ }
+      if (fs.existsSync(rec.worktree)) err(`offlimits team: ${rec.worktree} is no longer a git worktree but still has files; left in place`);
+    }
     const stage = flags.abandon ? 'abandoned' : 'merged';
     updateLane(dir, lane, { stage });
     out(`lane ${lane}: ${stage}, worktree and branch removed`);
+    if (flags.abandon) {
+      const undo = undoLine(rec.branch, tip);
+      if (undo) out(`branch ${rec.branch} was at ${tip}; ${undo}`);
+    }
     return 0;
   }
 }
