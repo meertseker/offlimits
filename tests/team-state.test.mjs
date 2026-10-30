@@ -210,3 +210,17 @@ test('a stale lock.break is cleared and a live one is respected', () => {
   assert.throws(() => withLock(d, () => 1, { timeoutMs: 200 }), /locked/);
   assert.ok(fs.existsSync(path.join(d, 'lock.break')));
 });
+
+test('locked writes refuse an unreadable board.json and keep it', () => {
+  const d = tmp();
+  const file = path.join(d, 'board.json');
+  for (const bad of ['{"lanes":{"a":{"stage":"building"}', '[]', '{"lanes":3}']) {
+    fs.writeFileSync(file, bad);
+    assert.throws(() => updateLane(d, 'b', { stage: 'briefed' }), /board\.json is unreadable; fix or delete it/);
+    assert.equal(fs.readFileSync(file, 'utf8'), bad);
+    assert.deepEqual(readBoard(d), { lanes: {} }); // the banner's read stays lenient
+  }
+  assert.throws(() => readBoard(d, { strict: true }), /board\.json is unreadable/);
+  fs.rmSync(file);
+  assert.deepEqual(readBoard(d, { strict: true }), { lanes: {} });
+});

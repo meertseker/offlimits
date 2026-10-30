@@ -109,11 +109,22 @@ function writeJsonAtomic(file, data) {
   }
 }
 
-export function readBoard(dir) {
+/**
+ * The board. Lenient by default (banner, `board`): missing or unreadable reads as empty.
+ * `strict` (every locked write path) throws on a file that exists but does not parse, so a write never
+ * replaces a damaged board with an empty one.
+ */
+export function readBoard(dir, { strict = false } = {}) {
+  let text;
+  try { text = fs.readFileSync(path.join(dir, 'board.json'), 'utf8'); } catch (e) {
+    if (strict && e.code !== 'ENOENT') throw e;
+    return { lanes: {} };
+  }
   try {
-    const b = JSON.parse(fs.readFileSync(path.join(dir, 'board.json'), 'utf8'));
-    if (b && typeof b === 'object' && b.lanes && typeof b.lanes === 'object') return b;
-  } catch { /* missing or unreadable */ }
+    const b = JSON.parse(text);
+    if (b && typeof b === 'object' && !Array.isArray(b) && b.lanes && typeof b.lanes === 'object' && !Array.isArray(b.lanes)) return b;
+  } catch { /* unreadable */ }
+  if (strict) throw new Error('board.json is unreadable; fix or delete it');
   return { lanes: {} };
 }
 
@@ -127,7 +138,7 @@ export function updateLane(dir, lane, patch) {
     throw new Error(`unknown stage: ${patch.stage}`);
   }
   return withLock(dir, () => {
-    const board = readBoard(dir);
+    const board = readBoard(dir, { strict: true });
     const now = new Date().toISOString();
     const prev = board.lanes[lane];
     const next = { ...(prev || { createdAt: now }), ...patch, createdAt: prev ? prev.createdAt : now, updatedAt: now };

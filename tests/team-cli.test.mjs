@@ -605,3 +605,16 @@ test('team.permissionMode reaches the worker command and the coordinator session
     assert.ok(!(await f.run(['worker', 'two', '--brief', path.join(f.tmp, 'b.md'), '--print'])).out.includes('--permission-mode'));
   } finally { f.cleanup(); }
 });
+
+test('worker refuses to start on an unreadable board.json and keeps it', async () => {
+  const f = fixture();
+  try {
+    fs.mkdirSync(f.dir, { recursive: true });
+    fs.writeFileSync(path.join(f.dir, 'board.json'), '{"lanes":{"a":');
+    const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    assert.equal(w.code, 1);
+    assert.match(w.err, /board\.json is unreadable; fix or delete it/);
+    assert.equal(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8'), '{"lanes":{"a":');
+    assert.ok(!fs.existsSync(path.join(f.tmp, 'repo-demo')));
+  } finally { f.cleanup(); }
+});

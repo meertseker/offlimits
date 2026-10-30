@@ -210,7 +210,7 @@ export async function main(argv, deps = {}) {
     const claimedAt = stamp();
     withLock(dir, () => {
       ensureTeamDir(dir);
-      const board = readBoard(dir);
+      const board = readBoard(dir, { strict: true });
       if (isLive(board.lanes[lane])) throw new Exit(2, `offlimits team: lane "${lane}" is already live`);
       if (Object.values(board.lanes).filter(isLive).length >= team.maxWorkers) {
         throw new Exit(2, `offlimits team: maxWorkers (${team.maxWorkers}) reached; finish or remove a lane first`);
@@ -236,7 +236,7 @@ export async function main(argv, deps = {}) {
       }
       try {
         withLock(dir, () => {
-          const board = readBoard(dir);
+          const board = readBoard(dir, { strict: true });
           delete board.lanes[lane];
           writeBoard(dir, board);
         });
