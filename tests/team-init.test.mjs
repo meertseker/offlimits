@@ -110,3 +110,30 @@ test('renderTemplate replaces known keys and leaves unknown ones', () => {
   assert.ok(out.includes('R1'));
   assert.ok(out.includes('{{checks}}'));
 });
+
+const BAD = {
+  'start only': `top\n${START}\nuser text\n`,
+  'end only': `top\nuser text\n${END}\n`,
+  'end before start': `${END}\nuser text\n${START}\n`,
+  'two blocks': `${START}\na\n${END}\nmid\n${START}\nb\n${END}\n`,
+};
+for (const [name, text] of Object.entries(BAD)) {
+  test(`init leaves CLAUDE.md alone with malformed markers: ${name}`, () => {
+    const d = repo();
+    fs.writeFileSync(path.join(d, 'CLAUDE.md'), text);
+    const r = runInit(d, {});
+    assert.equal(read(d, 'CLAUDE.md'), text);
+    assert.ok(!r.changed.includes('CLAUDE.md'));
+    assert.ok(r.notes.some((n) => /unpaired or duplicated offlimits:team marker/.test(n)));
+  });
+}
+
+test('init keeps CRLF bytes outside the markers', () => {
+  const d = repo();
+  fs.writeFileSync(path.join(d, 'CLAUDE.md'), `# Mine\r\nkeep top\r\n${START}\r\nold\r\n${END}\r\nkeep bottom\r\n`);
+  runInit(d, {});
+  const t = read(d, 'CLAUDE.md');
+  assert.ok(t.startsWith('# Mine\r\nkeep top\r\n'));
+  assert.ok(t.endsWith(`${END}\r\nkeep bottom\r\n`));
+  assert.ok(!t.includes('old'));
+});

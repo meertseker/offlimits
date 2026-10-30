@@ -39,7 +39,7 @@ export function runInit(root, { language } = {}) {
     write('offlimits.json', JSON.stringify({ defaultRole: 'worker', team: { language: language || 'en' } }, null, 2) + '\n');
   } else {
     let data = null;
-    try { data = JSON.parse(cfgText.replace(/^﻿/, '')); } catch { /* reported below */ }
+    try { data = JSON.parse(cfgText.replace(/^\uFEFF/, '')); } catch { /* reported below */ }
     if (data === null || typeof data !== 'object' || Array.isArray(data)) {
       notes.push('offlimits.json is not valid JSON; fix it and run init again');
     } else {
@@ -61,12 +61,18 @@ export function runInit(root, { language } = {}) {
   if (mdText === null) {
     next = block + '\n';
   } else {
+    const count = (m) => mdText.split(m).length - 1;
     const s = mdText.indexOf(START);
-    const e = s === -1 ? -1 : mdText.indexOf(END, s);
-    if (s !== -1 && e !== -1) {
+    const e = mdText.indexOf(END);
+    if (count(START) === 0 && count(END) === 0) {
+      const sep = mdText === '' ? '' : mdText.endsWith('\n') ? '\n' : '\n\n';
+      next = mdText + sep + block + '\n';
+    } else if (count(START) === 1 && count(END) === 1 && s < e) {
+      // The managed block itself is always written with LF; bytes outside the markers are untouched.
       next = mdText.slice(0, s) + block + mdText.slice(e + END.length);
     } else {
-      next = mdText + (mdText === '' || mdText.endsWith('\n') ? '' : '\n') + (mdText === '' ? '' : '\n') + block + '\n';
+      notes.push('CLAUDE.md has an unpaired or duplicated offlimits:team marker; fix it and run init again');
+      next = mdText;
     }
   }
   if (next !== mdText) write('CLAUDE.md', next);
