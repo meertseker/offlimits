@@ -19,7 +19,7 @@ Restate the house rules from `offlimits.json` here.
 - 
 
 ## Reservations needed
-Paths or areas to reserve with `team reserve` before editing. Write "none" if none.
+Numbers this lane needs. `team reserve <key>` (a key from `team.reservations`, e.g. migration) takes the next number. Never pick a number by looking at the directory. Write "none" if none.
 - 
 
 ## Night mode

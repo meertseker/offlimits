@@ -8,7 +8,7 @@ Roles
 Running team commands
 - Run team commands with the exact command shown in your session banner (it prints the path to `team.mjs`); in a human terminal use the `team` shell function from `init`.
 - `team stage <stage>`: set your lane stage (designing, awaiting-approval, building).
-- `team reserve <key>`: reserve an area before editing it.
+- `team reserve <key>` (a key from `team.reservations`, e.g. migration) takes the next number. Never pick a number by looking at the directory.
 - `team ask "<question>"`: leave an open question for the coordinator or human.
 - `team deliver --file <md>`: hand in your delivery.
 

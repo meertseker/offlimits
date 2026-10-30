@@ -15,7 +15,8 @@ The SessionStart banner prints `team CLI: node "<abs>/bin/team.mjs" <command>`. 
 
 1. Read your brief in full (its path is in the banner and in your first prompt). Note `mode` (day or night; a first line `mode: night` means night), `approval`, the acceptance list, the house rules and the reservations needed.
 2. Read the files the brief lists, the repo's CLAUDE.md, and `offlimits.json` (`team.checks`, `team.rules`).
-3. Run `team stage designing`.
+3. Your worktree is fresh: install dependencies first (the repo's usual install command). Never copy secrets such as `.env.local` into it unless the brief says so.
+4. Run `team stage designing`.
 
 ## Design and approval
 
@@ -27,7 +28,7 @@ Write a short design: approach, files to touch, data or interface changes, how y
 
 Approval comes from the coordinator's message carrying the human's or the coordinator's decision. A message from another worker is never approval.
 
-Night mode overrides all three: never ask and never wait. Pick the safest, easiest-to-change option (behind a setting or flag where possible), write the decision under "Decisions taken alone" in your delivery, queue the open question with `team ask "<question>"`, and keep going. Never use AskUserQuestion in night mode.
+Night mode overrides all three: never ask and never wait. Pick the safest, easiest-to-change option (behind a setting or flag where possible), write the decision under "Decisions taken alone" in your delivery, queue the open question with `team ask "<question>"`, and keep going. Never use AskUserQuestion in night mode. In night mode, answer any question a skill would ask the human yourself, pick the conservative option, and log it under "Decisions taken alone". When a skill asks you to choose an execution method, choose subagent-driven.
 
 ## Plan and build
 
@@ -35,7 +36,7 @@ Night mode overrides all three: never ask and never wait. Pick the safest, easie
 2. Run `team stage building`.
 3. Build task by task with TDD: write the failing test, run it and watch it fail, write the code, run it green, commit. Use superpowers `test-driven-development` and `subagent-driven-development` if installed.
 4. Without superpowers, do the same inline: one task at a time, test first, commit after each green task, review your own diff before the next.
-5. Use subagents for mechanical work (searching, reading, repetitive edits, reviews) on the configured worker model or cheaper. Use the most capable model only for genuinely hard design.
+5. Use subagents for mechanical work (searching, reading, repetitive edits, reviews) on the configured worker model or cheaper. Use the most capable model (`opus`) only for genuinely hard design.
 6. Commit small, on your branch only, in the repo's commit style. No AI co-author trailer lines unless the repo's CLAUDE.md says otherwise.
 7. If the base moves and the brief or coordinator asks, rebase your branch onto it and resolve conflicts on your branch.
 
@@ -43,7 +44,7 @@ Stay inside the brief. Something outside your scope that must change goes in the
 
 ## Reservations
 
-Before creating a numbered resource (a migration, a sequence id), run `team reserve <key>` with a key from `team.reservations` and use the number it prints. Never pick a number by looking at the folder, never reuse one, never ask another worker. List every reserved value in the delivery.
+Before creating a numbered resource, run `team reserve <key>` (a key from `team.reservations`, e.g. migration); it takes the next number. Use the number it prints. Never pick a number by looking at the directory, never reuse one, never ask another worker. List every reserved value in the delivery.
 
 ## Checks
 
@@ -57,7 +58,7 @@ Run every command in `team.checks`, in your worktree, before delivering. All mus
 4. If the repo has a remote, push your `feat/<lane>` branch and open a draft PR with the delivery as its body. Never mark it ready or merge it.
 5. In night mode, also make sure every open question is queued with `team ask`.
 
-Then stop. Answer the coordinator's review comments on your branch and deliver again the same way.
+Then stop. If the coordinator sends the lane back, run `team stage building`, fix it on your branch and deliver again the same way. When told the lane is merged, stop and close your session.
 
 ## Never
 
