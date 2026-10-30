@@ -51,7 +51,8 @@ test('launchSpec win32 wt escapes semicolons', () => {
 test('launchSpec win32 without wt uses cmd start, powershell fallback', () => {
   const s = launchSpec({ platform: 'win32', dir: 'C:\\My Dir', title: 'demo', command: 'echo hi', has: (b) => b === 'pwsh' });
   assert.equal(s.file, 'cmd');
-  assert.deepEqual(s.args, ['/c', 'start', 'demo', '/D', 'C:\\My Dir', 'pwsh', '-NoExit', '-Command', 'echo hi']);
+  assert.deepEqual(s.args, ['/c', 'start', '"demo"', '/D', '"C:\\My Dir"', 'pwsh', '-NoExit', '-Command', '"echo hi"']);
+  assert.deepEqual(s.options, { windowsVerbatimArguments: true });
   const p = launchSpec({ platform: 'win32', dir: 'C:\\d', title: 't', command: 'x', has: () => false });
   assert.equal(p.args[5], 'powershell');
 });
@@ -59,7 +60,7 @@ test('launchSpec win32 without wt uses cmd start, powershell fallback', () => {
 test('launchSpec darwin', () => {
   const s = launchSpec({ platform: 'darwin', dir: '/Users/a b/p', title: 't', command: "FOO=1 claude 'hi'", has: () => true });
   assert.equal(s.file, 'osascript');
-  assert.deepEqual(s.args, ['-e', `tell application "Terminal" to do script "cd /Users/a b/p && FOO=1 claude 'hi'"`]);
+  assert.deepEqual(s.args, ['-e', `tell application "Terminal" to do script "cd '/Users/a b/p' && FOO=1 claude 'hi'"`]);
   assert.equal(launchSpec({ platform: 'darwin', dir: '/a"b', title: 't', command: 'x', has: () => true }), null);
   assert.equal(launchSpec({ platform: 'darwin', dir: '/a\\b', title: 't', command: 'x', has: () => true }), null);
 });
@@ -98,4 +99,58 @@ test('openTerminal spawns detached, ignores stdio, unrefs', () => {
 
 test('hasBin returns false for a missing binary', () => {
   assert.equal(hasBin('definitely-not-a-real-bin-xyz'), false);
+});
+
+test('sessionCommand allowlists identifiers', () => {
+  for (const bad of ['x; calc', 'x && cmd', 'a b', '-flag', '', '.x']) {
+    for (const k of ['name', 'lane', 'role', 'model']) {
+      if (k === 'lane' && bad === '') continue; // empty lane means coordinator
+      assert.throws(() => sessionCommand({ shell: 'sh', ...base, [k]: bad }), /unsafe value/, k + ':' + bad);
+    }
+  }
+});
+
+test('sessionCommand prompt allowlist', () => {
+  const ok = (p) => sessionCommand({ shell: 'pwsh', ...base, prompt: p });
+  assert.doesNotThrow(() => ok('Read C:\\Users\\Mert Seker\\proj (1)\\brief.md, ok.'));
+  assert.doesNotThrow(() => ok('Oku C:\\Users\\\u015Eeker\\brief.md'));
+  for (const bad of ['C:\\Users\\Mert\u2019s\\b.md', 'a\u2018b', 'a\u201Ab', 'a\u201Bb', 'a;b', 'a&b', 'a|b', 'a%b', 'a<b', 'a>b', 'a^b', 'a`b']) {
+    assert.throws(() => ok(bad), /unsafe value/, bad);
+  }
+});
+
+test('sessionCommand validates shell', () => {
+  assert.throws(() => sessionCommand({ shell: 'bash', ...base }), /unsafe value/);
+  assert.throws(() => sessionCommand({ ...base }), /unsafe value/);
+});
+
+test('launchSpec win32 refuses shell metacharacters', () => {
+  const nowt = (b) => b === 'pwsh';
+  for (const bad of ['"', '%', '&', '|', '^', '<', '>']) {
+    assert.throws(() => launchSpec({ platform: 'win32', dir: 'C:\\a' + bad, title: 't', command: 'x', has: nowt }), /unsafe value/);
+    assert.throws(() => launchSpec({ platform: 'win32', dir: 'C:\\a', title: 't' + bad, command: 'x', has: nowt }), /unsafe value/);
+  }
+});
+
+test('launchSpec wt refuses ; in dir or title', () => {
+  const has = () => true;
+  assert.throws(() => launchSpec({ platform: 'win32', dir: 'C:\\a;b', title: 't', command: 'x', has }), /unsafe value/);
+  assert.throws(() => launchSpec({ platform: 'win32', dir: 'C:\\a', title: 't;u', command: 'x', has }), /unsafe value/);
+});
+
+test('launchSpec darwin refuses quote or newline in dir', () => {
+  assert.equal(launchSpec({ platform: 'darwin', dir: "/a'b", title: 't', command: 'x', has: () => true }), null);
+  assert.equal(launchSpec({ platform: 'darwin', dir: '/a\nb', title: 't', command: 'x', has: () => true }), null);
+});
+
+test('openTerminal attaches error handler', () => {
+  let handler;
+  const fake = () => ({ on(ev, fn) { if (ev === 'error') handler = fn; }, unref() {} });
+  openTerminal({ file: 'x', args: [] }, fake);
+  assert.equal(typeof handler, 'function');
+  const w = process.stderr.write;
+  let out = '';
+  process.stderr.write = (s) => { out += s; return true; };
+  try { handler(new Error('boom')); } finally { process.stderr.write = w; }
+  assert.match(out, /boom/);
 });
