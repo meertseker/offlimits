@@ -25,7 +25,7 @@ The first step is `/offlimits init` inside a Claude Code session in the reposito
 
 You run `team coordinator` in the main checkout and talk to it like a tech lead. It splits your request, writes a brief for each piece and opens one worker per lane: a new terminal, a git worktree on its own branch, the right model, nothing pasted. Each worker designs first, writes a plan, builds with tests and hands back a fixed delivery note. The coordinator reviews, merges in a safe order, and when you say "deploy" it merges, runs your deploy steps and checks the health URL. `team board` shows every lane, its stage and anything waiting for you. If you leave, night mode keeps the workers going without asking you anything.
 
-**Unattended workers.** Unattended or night workers need `team.permissionMode` set to `acceptEdits` or `bypassPermissions`: in the default mode a fresh worker session stops at its first permission prompt and waits for someone to answer it. The gate is what keeps that safe, because it runs in every permission mode and still denies a worker anything that touches production.
+**Unattended workers.** Workers that run while you are away (night mode) need `team.permissionMode` set to `acceptEdits` or `bypassPermissions`: in the default mode a fresh worker session stops at its first permission prompt and waits for someone to answer it. The gate is what keeps that safe, because it runs in every permission mode and still denies a worker anything that touches production.
 
 Commands, config keys, night mode, state layout and limits: [docs/team.md](docs/team.md).
 
