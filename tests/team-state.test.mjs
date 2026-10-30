@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -9,8 +9,28 @@ import {
   teamDir, ensureTeamDir, withLock, readBoard, writeBoard, updateLane, reserve, STAGES,
 } from '../hooks/lib/team/state.mjs';
 
+// Every temp dir made here is removed when the file finishes; worktrees first, so git's records go too.
+const made = [];
+after(() => {
+  for (const d of made) {
+    try {
+      const list = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const l of list.split(/\r?\n/)) {
+        if (l.startsWith('worktree ') && path.resolve(l.slice(9)) !== path.resolve(d)) {
+          try { execFileSync('git', ['worktree', 'remove', '--force', l.slice(9)], { cwd: d, stdio: 'ignore' }); } catch { /* best effort */ }
+        }
+      }
+    } catch { /* not a repo */ }
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 const STATE_URL = pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'lib', 'team', 'state.mjs')).href;
-const tmp = () => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-team-')));
+const tmp = () => {
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-team-')));
+  made.push(d);
+  return d;
+};
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 test('STAGES lists the lifecycle', () => {
@@ -114,6 +134,7 @@ test('teamDir from a worktree points to the main checkout', () => {
   assert.equal(teamDir(wt), teamDir(main));
   assert.equal(teamDir(main), path.join(main, '.offlimits', 'team'));
   assert.equal(teamDir(''), null);
+  git(main, 'worktree', 'remove', '--force', wt);
 });
 
 test('release does not delete a lock another holder re-created', () => {

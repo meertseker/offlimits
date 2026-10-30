@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -44,8 +44,25 @@ test('at most 25 lines with 30 lanes', () => {
   assert.match(out, /and \d+ more/);
 });
 
+// Every temp dir made here is removed when the file finishes; worktrees first, so git's records go too.
+const made = [];
+after(() => {
+  for (const d of made) {
+    try {
+      const list = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const l of list.split(/\r?\n/)) {
+        if (l.startsWith('worktree ') && path.resolve(l.slice(9)) !== path.resolve(d)) {
+          try { execFileSync('git', ['worktree', 'remove', '--force', l.slice(9)], { cwd: d, stdio: 'ignore' }); } catch { /* best effort */ }
+        }
+      }
+    } catch { /* not a repo */ }
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 function teamRepo() {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-tb-')));
+  made.push(dir);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
   execFileSync('git', ['-c', 'user.email=t@e.c', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'i'], { cwd: dir });
   fs.mkdirSync(path.join(dir, '.offlimits', 'team', 'briefs'), { recursive: true });

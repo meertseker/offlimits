@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,8 +6,25 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInit, renderTemplate } from '../hooks/lib/team/init.mjs';
 
+// Every temp dir made here is removed when the file finishes; worktrees first, so git's records go too.
+const made = [];
+after(() => {
+  for (const d of made) {
+    try {
+      const list = execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: d, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      for (const l of list.split(/\r?\n/)) {
+        if (l.startsWith('worktree ') && path.resolve(l.slice(9)) !== path.resolve(d)) {
+          try { execFileSync('git', ['worktree', 'remove', '--force', l.slice(9)], { cwd: d, stdio: 'ignore' }); } catch { /* best effort */ }
+        }
+      }
+    } catch { /* not a repo */ }
+    fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
 const repo = () => {
   const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-init-')));
+  made.push(d);
   execFileSync('git', ['init', '-q'], { cwd: d });
   return d;
 };
