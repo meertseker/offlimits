@@ -132,6 +132,13 @@ Order of resolution: the role variable `coordinator` (outside a subagent) gives 
 
 What the hook does when it crashes or cannot parse its input. `auto` blocks when the role is worker; a coordinator crash is allowed, and solo is allowed with a log entry. Every error is written to the log and shown in the next session banner.
 
+### `team`
+
+- Type: object
+- Default: none (team mode is off until `team init`)
+
+Settings for team mode: models, `maxWorkers`, base branch, checks, deploy steps, house rules, reservations and terminal. A bad value is ignored and reported, and never weakens the gate. Every key, type and default is in [team.md](team.md).
+
 ## Roles and defaults
 
 | Role | Set by | Hard rules | `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp`, `vercel-mcp` writes (production not matching) |

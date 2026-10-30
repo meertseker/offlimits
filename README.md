@@ -1,16 +1,34 @@
 # offlimits
 
-**The hook that keeps your coding agent out of production.**
+**Turn Claude Code into a software team.**
 
-Production is off limits. Prompts ask, hooks enforce. Runs in every permission mode, including --dangerously-skip-permissions.
+One coordinator you talk to, workers in their own worktrees, and a gate that keeps everyone but the coordinator out of production. Runs in every permission mode, including --dangerously-skip-permissions.
 
 ![A worker session's git push to main is blocked; in a separate coordinator session, started by the human with the role set, the same push goes through](assets/demo.svg)
 
-offlimits is a Claude Code plugin with one PreToolUse hook. It reads every shell command, file write and MCP call the agent is about to make, and refuses the ones that touch production: pushes to `main`, live database changes, deploys, package publishes, and SQL sent through MCP servers that happen to point at prod. No dependencies, no network, no account, no telemetry.
+offlimits started as a Claude Code hook that refuses anything touching production. It is now two things in one zero-dependency plugin: a **team mode** that sets up the coordinator and worker ritual in any repository, and the **gate** that enforces it. No dependencies, no network, no account, no telemetry.
+
+## Team mode
+
+```sh
+claude plugin install offlimits --marketplace meertseker/offlimits
+node <plugin>/bin/team.mjs init      # or /offlimits init inside Claude
+team coordinator                      # then talk to it
+```
+
+`init` turns the repository into a team repository: it merges `offlimits.json` (`defaultRole: worker` and a `team` block), adds a managed block to `CLAUDE.md`, a PR template and a `.gitignore` entry, and creates the state folder `.offlimits/team/`. It is safe to run again. At the end it prints a shell function so you can type `team` instead of the long command; add that line to your profile yourself, offlimits does not edit it. There is no npm package: the launcher is a file inside the plugin.
+
+To find `<plugin>`, start Claude Code once in the repository and read the `team CLI:` line of the SessionStart banner, which prints the exact command; or run `/offlimits init` inside Claude, which needs no path. Agents learn the exact `team` command from the same banner, so you never have to explain it to them.
+
+### A day with offlimits team
+
+You run `team coordinator` in the main checkout and talk to it like a tech lead. It splits your request, writes a brief for each piece and opens one worker per lane: a new terminal, a git worktree on its own branch, the right model, nothing pasted. Each worker designs first, writes a plan, builds with tests and hands back a fixed delivery note. The coordinator reviews, merges in a safe order, and when you say "deploy" it merges, runs your deploy steps and checks the health URL. `team board` shows every lane, its stage and anything waiting for you. If you leave, night mode keeps the workers going without asking you anything.
+
+Commands, config keys, night mode, state layout and limits: [docs/team.md](docs/team.md).
 
 ## Install
 
-Requires Claude Code 2.1.292 or newer for the one-command install (per the Claude Code plugin docs, install page) and Node 20 or newer.
+The command above is the install. Requires Claude Code 2.1.292 or newer for the one-command install (per the Claude Code plugin docs, install page) and Node 20 or newer.
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
@@ -73,10 +91,12 @@ Read-only MCP tools and SELECT queries through `execute_sql` pass unless the cal
 
 The role comes only from the `OFFLIMITS_ROLE` environment variable that you set before starting the session. An agent cannot change its own environment, and the `role-spoof` rule blocks it from trying.
 
+In team mode the launcher sets the variable, on the child process only, and never prints an assignment an agent could copy. Subagents of the coordinator are workers: they inherit its environment but the hook sees their `agent_id`. The commands that start or remove sessions (`team worker`, `done`, `coordinator`, `init`) are therefore refused to every worker and subagent by the `team-launch` rule, and by the CLI itself whenever it runs inside Claude Code without the coordinator role.
+
 | Role | How | What it can do |
 |---|---|---|
-| `coordinator` | `OFFLIMITS_ROLE=coordinator`, main session only | Everything. This is the one session that merges and deploys |
-| `worker` | `OFFLIMITS_ROLE=worker`, any subagent (the hook input carries an `agent_id`) unless its `agent_type` is in `trustedAgentTypes`, and a session whose variable is unset or unrecognised when `defaultRole` is `worker` | Every rule above denies |
+| `coordinator` | `OFFLIMITS_ROLE=coordinator`, main session only; `team coordinator` sets it for you | Everything. This is the one session that merges and deploys |
+| `worker` | `OFFLIMITS_ROLE=worker` (set by `team worker`), any subagent (the hook input carries an `agent_id`) unless its `agent_type` is in `trustedAgentTypes`, and a session whose variable is unset or unrecognised when `defaultRole` is `worker` | Every rule above denies |
 | `solo` | variable not set, or set to anything other than `coordinator` or `worker`, while `defaultRole` is `solo` (the default) | Hard rules deny. `db-migrate`, `opaque-shell`, `agent-spawn`, `git-clean`, `mcp-destructive`, unsure calls, and `supabase-mcp` and `vercel-mcp` writes ask; those MCP writes deny when the server or project is listed under `production` |
 
 If the hook itself fails, `onError: "auto"` blocks only for workers (fail closed). Coordinator and solo sessions allow the call and log the error; the warning appears in the next session banner and in `/offlimits`, not at the moment of the call. Change this with `onError`.
@@ -144,7 +164,7 @@ The full list, with mitigations, is in [docs/limits.md](docs/limits.md). A limit
 
 ## Built in production
 
-The hook started as the gate of a school-management SaaS where up to 37 Claude Code sessions worked in parallel on one repository, with a single coordinator session merging and deploying. Every other session was physically blocked from doing either. This plugin is that hook, generalised. It will also be the gate of Usta, an AI software team for family businesses.
+It started as the gate of a production school-management SaaS where up to 37 Claude Code sessions worked in parallel on one repository, with a single coordinator session merging and deploying. Every other session was physically blocked from doing either. The team ritual around it (briefs, worktrees, design before build, delivery notes, a night mode) was first done by hand there, with a prompt file, a shell function and a ledger folder. This plugin is that setup, generalised and made one command. It will also be the gate of Usta, an AI software team for family businesses.
 
 ## Incidents this would have caught
 
