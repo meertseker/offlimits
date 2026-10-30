@@ -117,7 +117,7 @@ export function teamBanner(f) {
     }
     if (f.cli) lines.push(f.cli);
   } else {
-    lines.push('This is a team repo. Start the coordinator from a terminal with: team coordinator');
+    lines.push("This is a team repo. Start the coordinator with /offlimits start (or 'team coordinator' in a terminal).");
     if (f.cli) lines.push(f.cli);
   }
   return lines.slice(0, TEAM_MAX_LINES).join('\n');

@@ -1,10 +1,10 @@
 /** Which team CLI commands a caller may run, decided from its environment. */
 
-export const PRIVILEGED = ['coordinator', 'worker', 'done', 'init'];
+export const PRIVILEGED = ['coordinator', 'worker', 'done', 'init', 'start'];
 export const LANE_CMDS = ['stage', 'deliver', 'ask'];
 
 // A solo Claude session (no recognised role) has no lane: only these.
-const SOLO_ALLOWED = ['init', 'board', 'reserve', 'ask'];
+const SOLO_ALLOWED = ['init', 'start', 'board', 'reserve', 'ask'];
 
 /**
  * @param {string} cmd

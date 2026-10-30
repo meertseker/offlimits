@@ -3,7 +3,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { stripAssignments, tokenize, tokens, baseName, flagValue, skipWrapperArgs, WRAPPERS, OPAQUE_PREFIX, OPAQUE_DEEP, OPAQUE_EVAL } from '../shell.mjs';
+import { stripAssignments, tokenize, tokens, baseName, flagValue, skipWrapperArgs, WRAPPERS, OPAQUE_PREFIX, OPAQUE_DEEP, OPAQUE_EVAL, OPAQUE_BRACES, OPAQUE_HASH } from '../shell.mjs';
 import { globMatch } from '../paths.mjs';
 
 const base = baseName;
@@ -906,13 +906,25 @@ function teamLaunch(c) {
   } else return null;
   const sub = rest.find((a) => !a.startsWith('-'));
   const worker = c.ctx.role === 'worker';
+  // start opens a coordinator window: a human's own session (worker only through defaultRole) may; a launched worker or subagent may not
+  const startDenied = worker && !c.ctx.viaDefault;
   // a worker also hits when a launch word follows other arguments (rare false positive: "team board worker")
-  const hit = TEAM_SUBS.has(sub) ? sub : worker ? rest.find((a) => TEAM_SUBS.has(a)) : undefined;
+  let hit;
+  if (TEAM_SUBS.has(sub)) hit = sub;
+  else if (sub === 'start') hit = startDenied ? 'start' : undefined;
+  else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || (a === 'start' && startDenied));
+  // a launched worker or subagent whose subcommand is hidden behind a variable or substitution (team $T, team $(echo start))
+  const SAFE_SUBS = ['board', 'stage', 'deliver', 'ask', 'reserve'];
+  if (!hit && startDenied && !SAFE_SUBS.includes(sub) && rest.some((a) => /[$`]/.test(a))) {
+    return { action: 'deny', reason: `${name}: team subcommand is not visible (a variable or substitution hides it) ${shown(c)}.` };
+  }
   if (!hit) return null;
   if (!worker && hit === 'init') return null;
   return {
     action: worker ? 'deny' : 'ask',
-    reason: hit === 'init'
+    reason: hit === 'start'
+      ? `${name} start opens a coordinator session, which a worker or subagent may not do ${shown(c)}.`
+      : hit === 'init'
       ? `${name} init rewrites team configuration; re-run it from a terminal with: team init ${shown(c)}.`
       : `${name} ${hit} would start or remove team sessions, which only the coordinator does ${shown(c)}.`,
   };
@@ -1038,10 +1050,14 @@ export function checkSegment(segment, ctx) {
       action: ctx.role === 'solo' ? 'ask' : 'deny',
       rule: 'opaque-shell',
       reason: rest === OPAQUE_DEEP
-        ? 'Command nests shells more than 8 levels deep, cannot inspect the innermost commands.'
+        ? 'Command nests shells more than 8 levels (or PowerShell subexpressions more than 100) deep, cannot inspect the innermost commands.'
         : rest === OPAQUE_EVAL
           ? 'Command evaluates text produced at run time (eval of a substitution), cannot inspect it.'
-          : 'Shell reads its commands from stdin, cannot inspect them.',
+          : rest === OPAQUE_BRACES
+            ? 'PowerShell script block or hash table braces do not balance, cannot inspect the commands inside.'
+            : rest === OPAQUE_HASH
+              ? 'PowerShell hash table entry has no readable key = value form, cannot tell which part runs.'
+              : 'Shell reads its commands from stdin, cannot inspect them.',
     };
   }
   const env0 = { ...(ctx.segEnvs ?? {}), ...kvObject(assignments) };

@@ -9,7 +9,7 @@ You are the one session the human talks to. You plan, brief workers, review what
 
 ## The team command
 
-The SessionStart banner prints `team CLI: node "<abs>/bin/team.mjs" <command>`. Run every team command with that exact prefix; the path is versioned, so never guess it. Below, `team <cmd>` means that full command. Run it from your own main session, never from a subagent: the gate treats subagents as workers and denies them `worker`, `done`, `coordinator` and `init`. The plugin root is the folder above `bin/`; templates live in `<root>/templates/`.
+The SessionStart banner prints `team CLI: node "<abs>/bin/team.mjs" <command>`. The human starts you with `/offlimits start` (a new window) or `team coordinator`. Run every team command with that exact prefix; the path is versioned, so never guess it. Below, `team <cmd>` means that full command. Run it from your own main session, never from a subagent: the gate treats subagents as workers and denies them `start`, `worker`, `done`, `coordinator` and `init`. The plugin root is the folder above `bin/`; templates live in `<root>/templates/`.
 
 Read `offlimits.json` (`team` block) at the start: `language`, `models`, `maxWorkers`, `base`, `checks`, `deploy`, `rules`, `reservations`. Then run `team board`.
 

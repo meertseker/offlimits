@@ -12,18 +12,20 @@ offlimits started as a Claude Code hook that refuses anything touching productio
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
-/offlimits init                       # inside Claude; prints the `team` shell function
-                                      # add that printed line to your shell profile
-team coordinator                      # in a terminal, then talk to it
+/offlimits init                       # inside Claude, in your project folder (an empty one is fine)
+git add offlimits.json CLAUDE.md .gitignore .github/pull_request_template.md && git commit -m "offlimits init"
+/offlimits start                      # a new window opens with the coordinator; talk to it there
 ```
 
-`init` turns the repository into a team repository: it merges `offlimits.json` (`defaultRole: worker` and a `team` block), adds a managed block to `CLAUDE.md`, a PR template and a `.gitignore` entry, and creates the state folder `.offlimits/team/`. It is safe to run again. At the end it prints a shell function so you can type `team` instead of the long command; add that line to your profile yourself, offlimits does not edit it. There is no npm package: the launcher is a file inside the plugin.
+Prefer a terminal? `init` also prints a `team` shell function (add that line to your profile); then `team coordinator` does the same as `/offlimits start`.
 
-The first step is `/offlimits init` inside a Claude Code session in the repository: the skill finds the plugin itself, runs `init` and prints the `team` shell-function line with the absolute path filled in. Add that line to your profile, open a terminal and run `team coordinator`. From then on the SessionStart banner prints the same path (the `team CLI:` line), and agents learn the exact command from it, so you never have to explain it to them.
+`init` turns the repository into a team repository: in a folder that is not a git repository it runs `git init` first, then merges `offlimits.json` (`defaultRole: worker` and a new `team` block with `permissionMode: bypassPermissions`, so unattended team windows do not stall), adds a managed block to `CLAUDE.md`, a PR template and a `.gitignore` entry, and creates the state folder `.offlimits/team/`. It is safe to run again. The gate keeps workers and subagents out of production. The coordinator is fully trusted: it keeps the configured `permissionMode` (bypass for a new team block), and it merges or deploys only on your explicit word, which is a skill rule, not a gate rule. If you want permission prompts on the coordinator, remove `permissionMode` from the `team` block or set it to `default`. At the end it prints a shell function so you can type `team` instead of the long command; add that line to your profile yourself, offlimits does not edit it. There is no npm package: the launcher is a file inside the plugin.
+
+The first step is `/offlimits init` inside a Claude Code session in the repository: the skill finds the plugin itself, runs `init` and prints the `team` shell-function line with the absolute path filled in. Commit the files it wrote, then run `/offlimits start`: a new terminal window opens with the coordinator. (Or add the shell-function line to your profile and run `team coordinator` in a terminal.) From then on the SessionStart banner prints the same path (the `team CLI:` line), and agents learn the exact command from it, so you never have to explain it to them.
 
 ### A day with offlimits team
 
-You run `team coordinator` in the main checkout and talk to it like a tech lead. It splits your request, writes a brief for each piece and opens one worker per lane: a new terminal, a git worktree on its own branch, the right model, nothing pasted. Each worker designs first, writes a plan, builds with tests and hands back a fixed delivery note. The coordinator reviews, merges in a safe order, and when you say "deploy" it merges, runs your deploy steps and checks the health URL. `team board` shows every lane, its stage and anything waiting for you. If you leave, night mode keeps the workers going without asking you anything.
+You run `/offlimits start` (or `team coordinator`) in the main checkout and talk to it like a tech lead. It splits your request, writes a brief for each piece and opens one worker per lane: a new terminal, a git worktree on its own branch, the right model, nothing pasted. Each worker designs first, writes a plan, builds with tests and hands back a fixed delivery note. The coordinator reviews, merges in a safe order, and when you say "deploy" it merges, runs your deploy steps and checks the health URL. `team board` shows every lane, its stage and anything waiting for you. If you leave, night mode keeps the workers going without asking you anything.
 
 **Unattended workers.** Workers that run while you are away (night mode) need `team.permissionMode` set to `acceptEdits` or `bypassPermissions`: in the default mode a fresh worker session stops at its first permission prompt and waits for someone to answer it. The gate is what keeps that safe, because it runs in every permission mode and still denies a worker anything that touches production.
 
@@ -78,7 +80,7 @@ Shell rules apply to `Bash` and `PowerShell` calls. Commands are split on `;`, `
 | `role-spoof` | any command that assigns `OFFLIMITS_ROLE`, so an agent cannot promote itself |
 | `protected-file` | writes to `.claude/settings.json`, `.claude/hooks/**`, `offlimits.json` and `.github/workflows/**`, by file tools or by `>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content` and similar |
 | `agent-spawn` | a worker starting another agent CLI (`claude`, `codex`, `aider`, `gemini`), which would run without the worker marker; solo asks |
-| `team-launch` | `team worker`, `done`, `coordinator` or `init` from a worker or subagent (the CLI starts or removes team sessions, which only the coordinator does); solo asks, except `init` |
+| `team-launch` | `team worker`, `done`, `coordinator`, `init` or `start` from a worker or subagent (the CLI starts or removes team sessions, which only the coordinator does); solo asks, except `init` and `start`. Your own session is allowed to `start` even when `defaultRole` makes it a worker; launched workers and subagents are not |
 | `git-clean` | `git clean -x` or `-X`, which also deletes ignored files such as `.env` and local databases; solo asks, `-n` passes |
 | `opaque-shell` | a shell that reads its commands from stdin, `eval` of generated text, nesting deeper than 8 levels, and commands too large to inspect in time (over 64 KB, 1000 segments or 200 variables); solo asks |
 | `extra-deny` | your own regexes from `offlimits.json` |
@@ -94,7 +96,7 @@ Read-only MCP tools and SELECT queries through `execute_sql` pass unless the cal
 
 The role comes only from the `OFFLIMITS_ROLE` environment variable that you set before starting the session. An agent cannot change its own environment, and the `role-spoof` rule blocks it from trying.
 
-In team mode the launcher sets the variable, on the child process only, and never prints an assignment an agent could copy. Subagents of the coordinator are workers: they inherit its environment but the hook sees their `agent_id`. The commands that start or remove sessions (`team worker`, `done`, `coordinator`, `init`) are therefore refused to every worker and subagent by the `team-launch` rule, and by the CLI itself whenever it runs inside Claude Code without the coordinator role.
+In team mode the launcher sets the variable, on the child process only, and never prints an assignment an agent could copy. Subagents of the coordinator are workers: they inherit its environment but the hook sees their `agent_id`. The commands that start or remove sessions (`team worker`, `done`, `coordinator`, `init`, `start`) are therefore refused to every worker and subagent by the `team-launch` rule, and by the CLI itself whenever it runs inside Claude Code without the coordinator role (`init` and `start` are the exceptions: a plain solo session may run them, and the gate alone refuses `start` to workers and subagents).
 
 | Role | How | What it can do |
 |---|---|---|

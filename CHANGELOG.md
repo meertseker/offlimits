@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.1 - 2026-10-30
+
+Added:
+
+- `/offlimits start` (`team start [--print]`): a Claude session you opened yourself opens the coordinator in a new terminal window, in the main checkout. The window runs `team coordinator`, so the lock, the role and the `claude` spawn are the existing ones, in human context (the role and session variables of the calling session are not passed on). Launched workers and every subagent are still refused: by the CLI guard and by the `team-launch` gate rule (denied when the role is worker and does not come from `defaultRole`).
+- `init` in a folder that is not a git repository runs `git init` first (never inside an existing repository, found by walking up for `.git` or `GIT_DIR`; never in your home directory or a drive root) and prints a `Next:` line that names the files to commit.
+
+Fixed:
+
+- Terminal launchers are now unwrapped by the gate (including a titled cmd `start` with switches, PowerShell `@(...)` and comma argument lists, `cmd /c "wt ; nt ..."`, prefix wrappers such as `nohup`/`sudo`, and `kitty`/`foot` options): `start` (cmd and PowerShell), `Start-Process`/`saps`, `wt` (with `nt`, `new-tab`, `sp`, `split-pane`), `x-terminal-emulator`, `xterm`, `konsole`, `gnome-terminal` and similar, and `osascript` `do script` bodies. The command they open is checked like a nested shell (`pwsh -Command`, `bash -c`, `cmd /c`), so a worker can no longer run a blocked command by opening it in a new window. Unreadable forms (an `osascript` script without `do script`, a `Start-Process` argument list built from variables) go through `opaque-shell`. This gap existed in 0.3.0.
+- PowerShell reading: nested script blocks are walked once per state (a crafted 60 KB command took 20 s and is now decided in well under a second), the walk counts script blocks and nested text against the budget, deeply nested `"$(` is `opaque-shell` instead of a crash, `$${ ... }` runs its block, hash-table keys such as `(1)` or `'a''b'` no longer hide their value, `<# ... #>` comments, backtick escapes, here-strings and curly quotes are read as PowerShell reads them, and cmd lead-ins (`if`, `call`, `@`, `for ... do`, `else`, a nested `cmd /c`) no longer hide the command after them, also before `wt`. Most of these gaps existed in 0.3.0.
+- A launched worker or subagent that hides the team subcommand behind a variable or substitution (`team $T`, `team $(echo start)`) is denied.
+- The SessionStart banner now says to start the coordinator with `/offlimits start`.
+- The environment scrub for launched terminals is case-insensitive on Windows and shared by `worker` and `start`.
+
+Changed:
+
+- `init` writes `"permissionMode": "bypassPermissions"` into a newly created `team` block, so unattended team windows do not stall on permission prompts. The gate keeps workers and subagents out of production. The coordinator is fully trusted: it keeps the configured `permissionMode` (bypass for a new team block), and it merges or deploys only on your explicit word, which is a skill rule, not a gate rule. If you want permission prompts on the coordinator, remove `permissionMode` from the `team` block or set it to `default`. An existing `team` block is never touched.
+- The gate rule context carries `viaDefault`, so `team-launch` can tell a human's own session (worker only by `defaultRole`) from a launched worker.
+
 ## 0.3.0 - 2026-10-30
 
 Repositioned: offlimits now turns Claude Code into a software team (one coordinator, workers in their own worktrees) and keeps the gate that holds it together.

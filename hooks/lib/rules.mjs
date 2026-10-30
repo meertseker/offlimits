@@ -21,7 +21,8 @@ export const RULE_IDS = Object.freeze([
 ]);
 
 /**
- * Limits for one shell command. Beyond maxBytes, maxSegments or maxVars the command is opaque;
+ * Limits for one shell command. Beyond maxBytes, maxSegments, maxVars, maxBlockWalks (PowerShell script blocks
+ * and hash tables walked) or maxNestedBytes (nested text walked in total) the command is opaque;
  * beyond maxBraceWords (all brace words judged), maxBranchLookups (distinct directories whose
  * branch is read with git) or branchLookupMs (time spent in those reads) the remaining checks
  * count as unsure.
@@ -30,6 +31,8 @@ export const BUDGET = Object.freeze({
   maxBytes: 64 * 1024,
   maxSegments: 1000,
   maxVars: 200,
+  maxBlockWalks: 8192,
+  maxNestedBytes: 1024 * 1024,
   maxBraceWords: 4096,
   maxBranchLookups: 16,
   branchLookupMs: 3000,
@@ -89,7 +92,7 @@ export function decide(input, ctx) {
     const command = String(toolInput.command ?? '');
     // Input budget: the hook must answer well inside Claude Code's hook timeout, or the call proceeds.
     if (command.length > BUDGET.maxBytes) return overBudget(ctx, `is longer than ${BUDGET.maxBytes / 1024} KB`);
-    const segs = expandWithState(command, BUDGET);
+    const segs = expandWithState(command, BUDGET, { ps: tool === 'PowerShell' });
     if (segs.overBudget) return overBudget(ctx, `has ${segs.overBudget}`);
     const heads = new Map();
     const shared = { ...ctx, currentBranch: branchLookup(ctx.currentBranch), work: { words: BUDGET.maxBraceWords } };
