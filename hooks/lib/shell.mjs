@@ -43,6 +43,7 @@ const SHELL_LIKE = new Set([...POSIX_SHELLS, ...PS_SHELLS, 'cmd', 'eval']);
 const ASSIGN = /^[A-Za-z_]\w*=/;
 const EVAL_SAFE = new Set(['ssh-agent', 'brew', 'direnv', 'pyenv', 'rbenv', 'nodenv', 'fnm', 'zoxide', 'starship', 'mise', 'rtx', 'conda', 'keychain', 'dircolors', 'opam', 'luarocks', 'pdm', 'register-python-argcomplete']);
 
+const START_LIKE = /^\s*(?:&\s*)?(?:start-process|saps|start)\s/i;
 const OPEN = Symbol('open');
 const CLOSE = Symbol('close');
 
@@ -90,6 +91,12 @@ function scan(s, literalBackslash, marks = false) {
     }
     if (c === '`') {
       bt = !bt;
+      cur += c;
+      continue;
+    }
+    if (c === '(' && START_LIKE.test(cur)) {
+      // Start-Process git ('push', 'origin'): an argument list, not a grouping
+      depth++;
       cur += c;
       continue;
     }
@@ -374,7 +381,7 @@ function substitutions(s) {
       q = q === c ? null : (q ?? c);
       continue;
     }
-    if ((c === '$' || c === '@') && s[i + 1] === '(') {
+    if ((c === '$' || (c === '@' && !q)) && s[i + 1] === '(') {
       let depth = 1;
       let j = i + 2;
       let iq = null;
@@ -541,10 +548,11 @@ function psWords(s) {
           cur += s[i++];
         }
         i++;
-      } else if ((c === '@' || c === '$') && s[i + 1] === '(') {
+      } else if (c === '(' || ((c === '@' || c === '$') && s[i + 1] === '(')) {
         let depth = 0;
         let q = null;
-        let j = i + 1;
+        const open = c === '(' ? i : i + 1;
+        let j = open;
         for (; j < n; j++) {
           const d = s[j];
           if (q) { if (d === q) q = null; continue; }
@@ -552,10 +560,13 @@ function psWords(s) {
           else if (d === '(') depth++;
           else if (d === ')' && --depth === 0) break;
         }
-        if (c === '@') {
+        if (c !== '$') {
+          // @( ... ) and plain ( ... ) groups: only quoted literals and commas; a bare word is a command, so anything else is opaque
           push();
-          for (const inner of psWords(s.slice(i + 2, j))) w.items.push(...inner.items);
-          if (psWords(s.slice(i + 2, j)).some((x) => x.expansion)) w.expansion = true;
+          const body = s.slice(open + 1, j);
+          const inner = psWords(body);
+          for (const x of inner) w.items.push(...x.items);
+          if (inner.some((x) => x.expansion) || body.replace(/'(?:[^']|'')*'|"(?:[^"`]|`.)*"/g, '').replace(/[\s,]/g, '') !== '') w.expansion = true;
         } else { w.expansion = true; has = true; cur += s.slice(i, j + 1); }
         i = j + 1;
       } else {
@@ -687,8 +698,10 @@ const TERMINAL_EMULATORS = new Set(['x-terminal-emulator', 'xterm', 'konsole', '
 /** Linux terminals: the command follows -e / -x / --. */
 const KITTY_BOOL = new Set(['--hold', '--single-instance', '-1', '--detach', '--detached', '--wait-for-single-instance-window-close', '--debug-config']);
 const KITTY_VALUE = new Set(['--class', '--name', '--title', '-T', '--directory', '-d', '--config', '-c', '--override', '-o', '--session', '--listen-on', '--start-as', '--os-window-state', '--instance-group', '--watcher']);
-const FOOT_BOOL = new Set(['-L', '--login-shell', '-m', '--maximized', '-F', '--fullscreen', '-S', '--server']);
+const FOOT_BOOL = new Set(['-H', '--hold', '-L', '--login-shell', '-m', '--maximized', '-F', '--fullscreen', '-S', '--server']);
 const FOOT_VALUE = new Set(['-t', '--title', '-a', '--app-id', '-w', '--window-size-pixels', '-W', '--window-size-chars', '-c', '--config', '-f', '--font', '-o', '--override', '-D', '--working-directory', '-T', '-s']);
+
+const NO_RUN = new Set(['--version', '-v', '--help', '-h']);
 
 /** kitty and foot take the command directly after their own options; an option we do not know makes it opaque. */
 function optionedTerminalBody(args, bools, values) {
@@ -698,6 +711,7 @@ function optionedTerminalBody(args, bools, values) {
     if (a === '--') { k++; break; }
     if (!a.startsWith('-')) break;
     const flag = a.includes('=') ? a.slice(0, a.indexOf('=')) : a;
+    if (NO_RUN.has(flag)) return []; // prints version or help, runs nothing
     if (bools.has(flag)) k++;
     else if (values.has(flag)) k += a.includes('=') ? 1 : 2;
     else return [OPAQUE_BODY];
@@ -885,9 +899,14 @@ function wrapperInfo(segment) {
     const k = args.findIndex((a) => /^\/[ck]/i.test(a));
     if (k === -1) return done([], false);
     const first = args[k].slice(2); // e.g. /c"git push" tokenises to "/cgit push"
-    // cmd has no ';' separator: quote it so it stays inside this body (wt gives it meaning later)
-    const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ').replace(/;/g, "';'");
-    return done(body ? [body] : [], false);
+    const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ');
+    // cmd has no ';' separator, but wt does: "wt ; nt <cmd>" also runs `wt nt <cmd>`. Only a standalone ';' counts, and
+    // every other ';' stays where it is so a nested shell body is still split by the checks that follow.
+    const extra = [];
+    if (baseName(tokens(body)[0]) === 'wt') {
+      for (const part of body.split(/\s;(?=\s|$)/).slice(1)) if (part.trim()) extra.push(`wt ${part.trim()}`);
+    }
+    return done(body ? [body, ...extra] : [], false);
   }
   return done([], false);
 }
