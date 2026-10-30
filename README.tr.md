@@ -10,8 +10,9 @@ Tam dokümantasyon İngilizcedir: [README.md](README.md). Bu sayfa kısa bir öz
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
-/offlimits init                       # Claude oturumunda; yazdırdığı team fonksiyonunu profilinize ekleyin
-team coordinator                      # sonra onunla konuşun
+/offlimits init                       # Claude oturumunda; `team` kabuk fonksiyonunu yazdırır
+                                      # yazdırılan satırı kabuk profilinize ekleyin
+team coordinator                      # bir terminalde; sonra onunla konuşun
 ```
 
 Claude Code 2.1.292 veya üstü ve Node 20 veya üstü gerekir. `init` depoyu ekip deposuna çevirir (`offlimits.json`, CLAUDE.md bloğu, PR şablonu, `.offlimits/team/`) ve profilinize ekleyebileceğiniz bir `team` kabuk fonksiyonu yazdırır. İlk adım, depoda açtığınız bir Claude oturumunda `/offlimits init` yazmaktır: eklenti yolunu kendisi bulur ve mutlak yolla yazılmış `team` fonksiyon satırını yazdırır; onu profilinize ekleyip terminalde `team coordinator` çalıştırın. Sonraki oturumlarda aynı yol banner'daki `team CLI:` satırında görünür. npm paketi yoktur.

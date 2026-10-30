@@ -12,8 +12,9 @@ offlimits started as a Claude Code hook that refuses anything touching productio
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
-node <plugin>/bin/team.mjs init      # or /offlimits init inside Claude
-team coordinator                      # then talk to it
+/offlimits init                       # inside Claude; prints the `team` shell function
+                                      # add that printed line to your shell profile
+team coordinator                      # in a terminal, then talk to it
 ```
 
 `init` turns the repository into a team repository: it merges `offlimits.json` (`defaultRole: worker` and a `team` block), adds a managed block to `CLAUDE.md`, a PR template and a `.gitignore` entry, and creates the state folder `.offlimits/team/`. It is safe to run again. At the end it prints a shell function so you can type `team` instead of the long command; add that line to your profile yourself, offlimits does not edit it. There is no npm package: the launcher is a file inside the plugin.

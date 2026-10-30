@@ -6,7 +6,8 @@ Team mode turns a repository into a small software team made of ordinary Claude 
 
 ```sh
 claude plugin install offlimits --marketplace meertseker/offlimits
-/offlimits init                       # inside Claude; prints the `team` function, add it to your profile
+/offlimits init                       # inside Claude; prints the `team` shell function
+                                      # add that printed line to your shell profile
 team coordinator                      # in a terminal, then talk to it
 ```
 
