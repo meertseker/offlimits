@@ -92,7 +92,8 @@ Everything lives under `team` in `offlimits.json`, and every key is optional. A 
     "deploy": { "steps": ["git push origin main", "gh run watch"], "healthUrl": "https://example.com/api/health" },
     "rules": ["Never edit generated files in dist/."],
     "reservations": { "migration": { "scan": "packages/db/supabase/migrations", "pattern": "^(\\d+)_", "width": 4 } },
-    "terminal": "auto"
+    "terminal": "auto",
+    "permissionMode": "default"
   }
 }
 ```
@@ -111,6 +112,7 @@ Everything lives under `team` in `offlimits.json`, and every key is optional. A 
 | `rules` | string array | `[]` | House rules, written into the managed `CLAUDE.md` block and restated in every brief. |
 | `reservations.<key>` | object | none | `scan` (folder, relative to each checkout), `pattern` (regex with exactly one capture group, matched against file names), `width` (integer 1 to 12, default 4). |
 | `terminal` | `"auto"` or `"none"` | `"auto"` | `none` always prints the command instead of opening a terminal. |
+| `permissionMode` | `"default"`, `"acceptEdits"` or `"bypassPermissions"` | `"default"` | Claude Code permission mode of the coordinator and worker sessions. Any value but `default` is passed as `--permission-mode <mode>`. See Unattended workers. |
 
 Lane names match `^[a-z0-9][a-z0-9-]{1,38}$`. Unknown `team` keys are reported and not used.
 
@@ -141,6 +143,10 @@ State is written under a file lock: a timestamped token, a breaker lock for stal
 Tell the coordinator you are leaving. It sends you one combined message with the plan and, per lane, two questions: approve, and merge tonight. Whatever the answer, or if you do not answer, it still launches every lane with `--night` and `approval: none`, so work is not parked. Night workers never ask and never wait: they take conservative choices, log every decision in their delivery and queue questions with `team ask`. Nothing is merged or deployed without your explicit go. In the morning you read the board, the deliveries and the questions.
 
 If a terminal could not be opened, the launcher only prints the command; the coordinator is told to say so before you leave.
+
+### Unattended workers
+
+Unattended or night workers need `team.permissionMode` set to `acceptEdits` or `bypassPermissions`: in the default mode a fresh worker session stops at its first permission prompt and waits for someone to answer it. The gate is what keeps that safe, because it runs in every permission mode and still denies a worker anything that touches production. With `permissionMode` left at `default`, the coordinator warns you before you leave.
 
 ## From a hand-built setup to team mode
 

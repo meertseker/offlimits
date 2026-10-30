@@ -13,6 +13,7 @@ import path from 'node:path';
  * @property {string[]} rules
  * @property {Record<string, {scan: string, pattern: string, width: number}>} reservations
  * @property {'auto'|'none'} terminal
+ * @property {'default'|'acceptEdits'|'bypassPermissions'} permissionMode
  */
 
 /** @type {Team} */
@@ -27,9 +28,11 @@ export const TEAM_DEFAULTS = Object.freeze({
   rules: Object.freeze([]),
   reservations: Object.freeze({}),
   terminal: 'auto',
+  permissionMode: 'default',
 });
 
 const TERMINAL = ['auto', 'none'];
+export const PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions'];
 
 const isStringArray = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -48,6 +51,7 @@ function cloneDefaults() {
     rules: [],
     reservations: {},
     terminal: TEAM_DEFAULTS.terminal,
+    permissionMode: TEAM_DEFAULTS.permissionMode,
   };
 }
 
@@ -113,6 +117,10 @@ export function loadTeam(root, readFile = fs.readFileSync) {
       case 'terminal':
         if (TERMINAL.includes(v)) team.terminal = v;
         else bad(key, 'one of auto, none');
+        break;
+      case 'permissionMode':
+        if (PERMISSION_MODES.includes(v)) team.permissionMode = v;
+        else bad(key, `one of ${PERMISSION_MODES.join(', ')}`);
         break;
       case 'models':
         if (!isObject(v)) {

@@ -12,7 +12,8 @@ Added:
 
 - Team mode: `bin/team.mjs` (also `offlimits-team`, or `team` once the shell function from `init` is in your profile) with `init`, `coordinator`, `worker`, `board`, `stage`, `deliver`, `ask`, `reserve` and `done`, and exit codes 0 to 4.
 - `init` writes `offlimits.json` (`defaultRole: worker`, a `team` block), a managed block in `CLAUDE.md`, a PR template and a `.gitignore` entry, and prints a `team` shell function. Safe to re-run.
-- The `team` block in `offlimits.json`: `language`, `models`, `maxWorkers`, `base`, `worktreeDir`, `checks`, `deploy`, `rules`, `reservations`, `terminal`, validated without ever weakening the gate.
+- The `team` block in `offlimits.json`: `language`, `models`, `maxWorkers`, `base`, `worktreeDir`, `checks`, `deploy`, `rules`, `reservations`, `terminal`, `permissionMode`, validated without ever weakening the gate.
+- `team.permissionMode` (`default`, `acceptEdits` or `bypassPermissions`): passed as `--permission-mode` to the coordinator and worker sessions. Unattended and night workers need `acceptEdits` or `bypassPermissions`, or they stall on the first permission prompt; the gate keeps that safe.
 - Team state in `.offlimits/team/` (board, coordinator lock, reservations, briefs, deliveries, questions) under a file lock with timestamped tokens and a breaker lock.
 - Workers in new terminals (Windows Terminal, Terminal.app, `x-terminal-emulator`, or a printed command), each in a git worktree on `feat/<lane>`, with role, lane and model set by the launcher.
 - Atomic reservations such as migration numbers: `team reserve <key>`.

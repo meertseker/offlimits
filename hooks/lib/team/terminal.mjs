@@ -19,7 +19,16 @@ function promptText(v) {
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-export function sessionCommand({ shell, role, lane, model, name, prompt, roleEnv = 'OFFLIMITS_ROLE' }) {
+const PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions'];
+
+/** `--permission-mode <m>` for a non-default mode, else nothing. */
+export function permissionArgs(mode) {
+  if (mode == null || mode === 'default') return [];
+  if (!PERMISSION_MODES.includes(mode)) throw new Error('unsafe value');
+  return ['--permission-mode', mode];
+}
+
+export function sessionCommand({ shell, role, lane, model, name, prompt, roleEnv = 'OFFLIMITS_ROLE', permissionMode }) {
   if (shell !== 'pwsh' && shell !== 'sh') throw new Error('unsafe value');
   if (!ENV_NAME.test(String(roleEnv))) throw new Error('unsafe value');
   const r = ident(role);
@@ -27,7 +36,8 @@ export function sessionCommand({ shell, role, lane, model, name, prompt, roleEnv
   const n = ident(name);
   const p = promptText(prompt);
   const l = lane == null || lane === '' ? null : ident(lane);
-  const tail = `claude --model ${m} -n ${n} '${p}'`;
+  const pm = permissionArgs(permissionMode).map((a) => ` ${a}`).join('');
+  const tail = `claude --model ${m} -n ${n}${pm} '${p}'`;
   if (shell === 'pwsh') {
     const env = [`$env:${roleEnv}='${r}'`];
     if (l !== null) env.push(`$env:OFFLIMITS_LANE='${l}'`);
@@ -93,7 +103,7 @@ export function hasBin(bin) {
 }
 
 const CLAUDE_ARG = /^[A-Za-z0-9][\w.-]*$/;
-const CLAUDE_FLAGS = ['--model', '-n', '--continue'];
+const CLAUDE_FLAGS = ['--model', '-n', '--continue', '--permission-mode'];
 
 function whereClaude() {
   try {

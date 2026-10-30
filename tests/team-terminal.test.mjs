@@ -182,3 +182,20 @@ test('claudeInvocation: windows prefers .exe, wraps .cmd via cmd.exe, validates 
   assert.throws(() => claudeInvocation(args, { platform: 'win32', where: () => [] }), /claude not found on PATH/);
   assert.throws(() => claudeInvocation(args, { platform: 'win32', where: () => [String.raw`C:\a&b\claude.cmd`] }), /unsafe value/);
 });
+
+test('sessionCommand adds --permission-mode only when it is not default', () => {
+  assert.ok(!sessionCommand({ shell: 'sh', ...base, prompt: 'hi' }).includes('--permission-mode'));
+  assert.ok(!sessionCommand({ shell: 'sh', ...base, prompt: 'hi', permissionMode: 'default' }).includes('--permission-mode'));
+  assert.equal(
+    sessionCommand({ shell: 'pwsh', ...base, prompt: 'hi', permissionMode: 'bypassPermissions' }),
+    "$env:OFFLIMITS_ROLE='worker'; $env:OFFLIMITS_LANE='demo'; claude --model sonnet -n demo --permission-mode bypassPermissions 'hi'",
+  );
+  assert.ok(sessionCommand({ shell: 'sh', ...base, prompt: 'hi', permissionMode: 'acceptEdits' }).includes(' --permission-mode acceptEdits '));
+  for (const bad of ['plan', 'a b', "x'y"]) assert.throws(() => sessionCommand({ shell: 'sh', ...base, prompt: 'hi', permissionMode: bad }), /unsafe value/);
+});
+
+test('claudeInvocation passes --permission-mode on windows', () => {
+  const shim = String.raw`C:\n\claude.cmd`;
+  const r = claudeInvocation(['--model', 'opus', '-n', 'coordinator', '--permission-mode', 'acceptEdits'], { platform: 'win32', where: () => [shim] });
+  assert.equal(r.args[3], `""${shim}" --model opus -n coordinator --permission-mode acceptEdits"`);
+});

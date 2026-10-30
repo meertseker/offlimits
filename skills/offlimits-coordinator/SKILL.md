@@ -82,7 +82,7 @@ One lane at a time. If a step needs something only the human can do (a secret, a
 
 When the human says they are leaving, going to sleep, or "work overnight":
 
-1. Send ONE combined message: the plan, the design artifact link if there is one, and for each lane two questions: approve (y/n) and merge tonight (y/n).
+1. Send ONE combined message: the plan, the design artifact link if there is one, and for each lane two questions: approve (y/n) and merge tonight (y/n). If `team.permissionMode` in `offlimits.json` is missing or `"default"`, say in this message that unattended workers will stall on their first permission prompt, and suggest the human set it to `"acceptEdits"` or `"bypassPermissions"` before leaving (the gate still holds in every mode; only the human can edit `offlimits.json`).
 2. Write each brief with `mode: night`, then launch every lane with `--night`. If the human leaves without answering, still launch every lane, with `approval: none`. The standing preference is "finish the work, ask at the end": launching beats parking. Small fixes follow the same rule.
 3. Night workers never ask and never wait. They make conservative choices, log every decision in the delivery and queue questions with `team ask`.
 4. Before the human leaves, run `team board` and confirm every lane's terminal opened. A printed fallback command is useless at night: if a launch only printed, say so in that same message so the human can run it.

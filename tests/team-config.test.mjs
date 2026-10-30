@@ -65,3 +65,17 @@ test('bad team block never changes gate policy', () => {
   assert.deepEqual(r.problems, []);
   assert.equal(loadTeam('/repo', reader('{"team":5}')).problems.length, 1);
 });
+
+test('team.permissionMode defaults to default, accepts three modes, refuses the rest', () => {
+  assert.equal(loadTeam('/repo', reader('{"team":{}}')).team.permissionMode, 'default');
+  for (const m of ['default', 'acceptEdits', 'bypassPermissions']) {
+    const r = loadTeam('/repo', reader(JSON.stringify({ team: { permissionMode: m } })));
+    assert.deepEqual(r.problems, []);
+    assert.equal(r.team.permissionMode, m);
+  }
+  for (const m of ['plan', 'dontAsk', 'bypass', '', 1, null]) {
+    const r = loadTeam('/repo', reader(JSON.stringify({ team: { permissionMode: m } })));
+    assert.deepEqual(r.problems, ['offlimits.json: "team.permissionMode" must be one of default, acceptEdits, bypassPermissions']);
+    assert.equal(r.team.permissionMode, 'default');
+  }
+});

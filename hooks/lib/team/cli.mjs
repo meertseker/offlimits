@@ -10,7 +10,7 @@ import { guard } from './guard.mjs';
 import { runInit } from './init.mjs';
 import { LANE_RE, addLane, assertLane, lanePath, laneStatus, pruneLane, removeLane, resolveBase } from './lanes.mjs';
 import { STAGES, ensureTeamDir, readBoard, reserve, updateLane, withLock, writeBoard } from './state.mjs';
-import { claudeInvocation, hasBin, launchSpec, openTerminal, sessionCommand } from './terminal.mjs';
+import { claudeInvocation, hasBin, launchSpec, openTerminal, permissionArgs, sessionCommand } from './terminal.mjs';
 
 const BIN = fileURLToPath(new URL('../../../bin/team.mjs', import.meta.url));
 const VALUE_FLAGS = ['brief', 'model', 'base', 'lane', 'note', 'file', 'language'];
@@ -197,7 +197,7 @@ export async function main(argv, deps = {}) {
     let spec = null;
     try {
       command = sessionCommand({
-        shell: platform === 'win32' ? 'pwsh' : 'sh', role: 'worker', lane, model, name: lane, roleEnv,
+        shell: platform === 'win32' ? 'pwsh' : 'sh', role: 'worker', lane, model, name: lane, roleEnv, permissionMode: team.permissionMode,
         prompt: `You are worker ${lane}. Read ${briefPath} and follow it.`,
       });
       spec = launchSpec({ platform, dir: worktree, title: lane, command, has });
@@ -268,7 +268,7 @@ export async function main(argv, deps = {}) {
     }
     const model = team.models.coordinator;
     if (!ID.test(model)) throw new Exit(1, 'offlimits team: cannot build a safe command (unsafe value); fix team.models.coordinator');
-    const args = ['--model', model, '-n', 'coordinator', ...(flags.resume ? ['--continue'] : [])];
+    const args = ['--model', model, '-n', 'coordinator', ...permissionArgs(team.permissionMode), ...(flags.resume ? ['--continue'] : [])];
     if (flags.print) {
       out(`cd "${mainRoot}"`);
       out(`claude ${args.join(' ')}  (role is set by the launcher)`);

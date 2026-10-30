@@ -589,3 +589,19 @@ test('re-running done after a half-finished worktree remove finishes the job', a
     assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
   } finally { f.cleanup(); }
 });
+
+test('team.permissionMode reaches the worker command and the coordinator session', async () => {
+  const f = fixture();
+  try {
+    f.setTeam({ permissionMode: 'bypassPermissions' });
+    const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    assert.equal(w.code, 0, w.err);
+    assert.match(w.out, /claude --model sonnet -n demo --permission-mode bypassPermissions '/);
+    const p = await f.run(['coordinator', '--print']);
+    assert.match(p.out, /claude --model opus -n coordinator --permission-mode bypassPermissions/);
+    assert.equal((await f.run(['coordinator'])).code, 0);
+    assert.deepEqual(f.calls.spawn[0].args, ['--model', 'opus', '-n', 'coordinator', '--permission-mode', 'bypassPermissions']);
+    f.setTeam({});
+    assert.ok(!(await f.run(['worker', 'two', '--brief', path.join(f.tmp, 'b.md'), '--print'])).out.includes('--permission-mode'));
+  } finally { f.cleanup(); }
+});
