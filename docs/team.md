@@ -116,7 +116,7 @@ Everything lives under `team` in `offlimits.json`, and every key is optional. A 
 | `terminal` | `"auto"` or `"none"` | `"auto"` | `none` always prints the command instead of opening a terminal. |
 | `permissionMode` | `"default"`, `"acceptEdits"` or `"bypassPermissions"` | `"default"` | Claude Code permission mode of the coordinator and worker sessions. Any value but `default` is passed as `--permission-mode <mode>`. See Unattended workers. |
 
-Lane names match `^[a-z0-9][a-z0-9-]{1,38}$`. Unknown `team` keys are reported and not used.
+Lane names match `^[a-z0-9][a-z0-9-]{1,38}$`. Model names (`models.coordinator`, `models.worker`, `--model`) must match `^[A-Za-z0-9][\w.-]*$`, so a value such as `opus[1m]` is refused when a session starts; use a plain alias or a full model id. Unknown `team` keys are reported and not used.
 
 ### Reservations
 
