@@ -1,0 +1,86 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { loadTeam } from './config.mjs';
+import { teamDir, ensureTeamDir } from './state.mjs';
+
+const START = '<!-- offlimits:team:start -->';
+const END = '<!-- offlimits:team:end -->';
+const TEMPLATES = new URL('../../../templates/', import.meta.url);
+
+/** Render `templates/<name>`, replacing `{{key}}`. Unknown keys stay as written. */
+export function renderTemplate(name, vars = {}) {
+  const text = fs.readFileSync(new URL(name, TEMPLATES), 'utf8').replace(/\r\n/g, '\n');
+  return text.replace(/\{\{(\w+)\}\}/g, (m, k) => (Object.hasOwn(vars, k) ? vars[k] : m));
+}
+
+const bullets = (items, none, wrap = (s) => s) => (items.length ? items.map((s) => `- ${wrap(s)}`).join('\n') : none);
+
+function readIfExists(file) {
+  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+}
+
+/**
+ * Turn `root` into a team repository. Idempotent; never touches text outside the managed markers.
+ * @returns {{changed: string[], notes: string[]}}
+ */
+export function runInit(root, { language } = {}) {
+  const changed = [];
+  const notes = [];
+  const write = (rel, text) => {
+    const file = path.join(root, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+    changed.push(rel.split(path.sep).join('/'));
+  };
+
+  // offlimits.json
+  const cfgText = readIfExists(path.join(root, 'offlimits.json'));
+  if (cfgText === null) {
+    write('offlimits.json', JSON.stringify({ defaultRole: 'worker', team: { language: language || 'en' } }, null, 2) + '\n');
+  } else {
+    let data = null;
+    try { data = JSON.parse(cfgText.replace(/^﻿/, '')); } catch { /* reported below */ }
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      notes.push('offlimits.json is not valid JSON; fix it and run init again');
+    } else {
+      let dirty = false;
+      if (!('defaultRole' in data)) { data.defaultRole = 'worker'; dirty = true; }
+      if (!('team' in data)) { data.team = { language: language || 'en' }; dirty = true; }
+      if (dirty) write('offlimits.json', JSON.stringify(data, null, 2) + '\n');
+    }
+  }
+
+  // CLAUDE.md managed block
+  const { team } = loadTeam(root);
+  const block = renderTemplate('claude-block.md', {
+    rules: bullets(team.rules, '- (none yet)'),
+    checks: bullets(team.checks, '- (none configured)', (c) => `\`${c}\``),
+  }).replace(/\n+$/, '');
+  const mdText = readIfExists(path.join(root, 'CLAUDE.md'));
+  let next;
+  if (mdText === null) {
+    next = block + '\n';
+  } else {
+    const s = mdText.indexOf(START);
+    const e = s === -1 ? -1 : mdText.indexOf(END, s);
+    if (s !== -1 && e !== -1) {
+      next = mdText.slice(0, s) + block + mdText.slice(e + END.length);
+    } else {
+      next = mdText + (mdText === '' || mdText.endsWith('\n') ? '' : '\n') + (mdText === '' ? '' : '\n') + block + '\n';
+    }
+  }
+  if (next !== mdText) write('CLAUDE.md', next);
+
+  // .gitignore
+  const gi = readIfExists(path.join(root, '.gitignore'));
+  if (gi === null || !gi.split(/\r?\n/).some((l) => l.trim() === '.offlimits/')) {
+    write('.gitignore', (gi ?? '') + (gi && !gi.endsWith('\n') ? '\n' : '') + '.offlimits/\n');
+  }
+
+  // PR template
+  const pr = path.join('.github', 'pull_request_template.md');
+  if (!fs.existsSync(path.join(root, pr))) write(pr, renderTemplate('pull_request_template.md'));
+
+  ensureTeamDir(teamDir(root) ?? path.join(root, '.offlimits', 'team'));
+  return { changed, notes };
+}
