@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "type": "module",
   "engines": { "node": ">=20" },
+  "bin": { "offlimits-team": "bin/team.mjs" },
   "scripts": {
     "test": "node --test",
     "validate": "claude plugin validate .",

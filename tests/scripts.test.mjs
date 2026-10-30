@@ -10,29 +10,27 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const script = (n) => path.join(ROOT, 'scripts', n);
 const read = (n) => fs.readFileSync(script(n), 'utf8');
 const hasPwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
-const pwsh = (file, args, cwd = ROOT) => spawnSync('pwsh', ['-NoProfile', '-File', file, ...args], { cwd, encoding: 'utf8' });
+const pwsh = (file, args, cwd = ROOT) => spawnSync('pwsh', ['-NoProfile', '-File', file, ...args], { cwd, encoding: 'utf8', env: { ...process.env, CLAUDECODE: '' } });
 
-test('worker.ps1 calls git directly and validates -Base', () => {
-  const s = read('worker.ps1');
-  assert.ok(!s.includes('Invoke-Expression'), 'no Invoke-Expression');
-  assert.ok(s.includes('& git @GitArgs'));
-  assert.ok(s.includes(String.raw`'^[\w./-]+$'`));
+test('wrappers only delegate to bin/team.mjs', () => {
+  for (const [file, cmd] of [['worker.ps1', 'worker'], ['coordinator.ps1', 'coordinator']]) {
+    const s = read(file);
+    assert.ok(!s.includes('Invoke-Expression'), 'no Invoke-Expression');
+    assert.ok(s.includes(`node "$PSScriptRoot/../bin/team.mjs" ${cmd} @args`), file);
+    assert.ok(s.includes('exit $LASTEXITCODE'), file);
+    assert.ok(!/claudes/.test(s.replace(/^#.*$/gm, '')), 'wrapper must not start claude itself');
+  }
 });
 
-test('worker.ps1 dry run and -Base validation', { skip: !hasPwsh && 'pwsh not installed' }, () => {
-  const ok = pwsh(script('worker.ps1'), ['-Lane', 'test-lane', '-DryRun', '-NoLaunch']);
-  assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /\[dry-run\] git worktree add -b feat\/test-lane \.\.\/offlimits-test-lane origin\/main/);
-  const bad = pwsh(script('worker.ps1'), ['-Lane', 'test-lane', '-Base', 'x;Remove-Item y', '-DryRun']);
-  assert.notEqual(bad.status, 0);
-  assert.match(bad.stdout + bad.stderr, /Invalid base/);
-  const dash = pwsh(script('worker.ps1'), ['-Lane', 'test-lane', '-Base', '--upload-pack=x', '-DryRun']);
-  assert.notEqual(dash.status, 0);
+test('worker.ps1 passes arguments through and validates the lane', { skip: !hasPwsh && 'pwsh not installed' }, () => {
+  const r = pwsh(script('worker.ps1'), ['Bad_Lane', '--brief', 'x.md']);
+  assert.equal(r.status, 2);
+  assert.match(r.stdout + r.stderr, /lane name must match/);
 });
 
 test('coordinator.ps1 fails clearly outside a git repository', { skip: !hasPwsh && 'pwsh not installed' }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'offlimits-nonrepo-'));
-  const r = pwsh(script('coordinator.ps1'), ['-DryRun'], dir);
+  const r = pwsh(script('coordinator.ps1'), ['--print'], dir);
   assert.notEqual(r.status, 0);
-  assert.match(r.stdout + r.stderr, /Not inside a git repository/);
+  assert.match(r.stdout + r.stderr, /not inside a git repository/);
 });
