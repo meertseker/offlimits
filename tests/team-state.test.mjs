@@ -115,3 +115,50 @@ test('teamDir from a worktree points to the main checkout', () => {
   assert.equal(teamDir(main), path.join(main, '.offlimits', 'team'));
   assert.equal(teamDir(''), null);
 });
+
+test('release does not delete a lock another holder re-created', () => {
+  const d = tmp();
+  const lock = path.join(d, 'lock');
+  withLock(d, () => { fs.rmSync(lock, { force: true }); fs.writeFileSync(lock, 'other-holder'); });
+  assert.equal(fs.readFileSync(lock, 'utf8'), 'other-holder');
+});
+
+test('a stale lock is broken by rename and leaves no debris', () => {
+  const d = tmp();
+  const lock = path.join(d, 'lock');
+  fs.writeFileSync(lock, 'dead');
+  const old = new Date(Date.now() - 60000);
+  fs.utimesSync(lock, old, old);
+  assert.equal(withLock(d, () => 7), 7);
+  assert.deepEqual(fs.readdirSync(d), []);
+});
+
+test('two processes breaking the same stale lock never both enter', async () => {
+  for (let round = 0; round < 3; round++) {
+    const d = tmp();
+    const lock = path.join(d, 'lock');
+    fs.writeFileSync(lock, 'dead');
+    const old = new Date(Date.now() - 60000);
+    fs.utimesSync(lock, old, old);
+    const code = `import(${JSON.stringify(STATE_URL)}).then(m=>{const fs=require('node:fs');const inside=${JSON.stringify(path.join(d, 'inside'))};let bad=0;
+      for(let i=0;i<10;i++)m.withLock(${JSON.stringify(d)},()=>{try{fs.writeFileSync(inside,'x',{flag:'wx'})}catch{bad++}
+        const t=Date.now();while(Date.now()-t<15);try{fs.rmSync(inside)}catch{}},{timeoutMs:10000});
+      console.log(bad)})`;
+    const run = () => new Promise((resolve, reject) => {
+      const c = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let out = '';
+      c.stdout.on('data', (b) => { out += b; });
+      c.on('close', (n) => (n === 0 ? resolve(Number(out.trim())) : reject(new Error('child exit ' + n))));
+    });
+    const bad = await Promise.all([run(), run()]);
+    assert.deepEqual(bad, [0, 0]);
+  }
+});
+
+test('reserve refuses an unreadable reservations.json and keeps it', () => {
+  const d = tmp();
+  const f = path.join(d, 'reservations.json');
+  fs.writeFileSync(f, '{not json');
+  assert.throws(() => reserve(d, 'k', {}), /reservations\.json is unreadable; fix or delete it/);
+  assert.equal(fs.readFileSync(f, 'utf8'), '{not json');
+});

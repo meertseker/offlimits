@@ -113,10 +113,11 @@ export function claudeInvocation(args, { platform = process.platform, where = wh
   if (platform !== 'win32') return { file: 'claude', args, options: {} };
   for (const a of args) if (!CLAUDE_FLAGS.includes(a) && !CLAUDE_ARG.test(a)) throw new Error('unsafe value');
   const found = where('claude');
-  const exe = found.find((p) => /\.exe$/i.test(p));
-  if (exe) return { file: exe, args, options: {} };
-  const shim = found.find((p) => /\.(cmd|bat)$/i.test(p));
-  if (!shim) throw new Error('claude not found on PATH');
+  // First PATH entry that can run wins; only skip entries that are not .exe/.cmd/.bat.
+  const hit = found.find((p) => /\.(exe|cmd|bat)$/i.test(p));
+  if (!hit) throw new Error('claude not found on PATH');
+  if (/\.exe$/i.test(hit)) return { file: hit, args, options: {} };
+  const shim = hit;
   if (/["%&|^<>\r\n]/.test(shim)) throw new Error('unsafe value');
   // /s strips the outer quotes, leaving: "<shim>" args
   return {

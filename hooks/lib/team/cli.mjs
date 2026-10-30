@@ -203,24 +203,44 @@ export async function main(argv, deps = {}) {
       throw new Exit(1, `offlimits team: the brief path contains characters a terminal command cannot carry safely: ${briefPath}; move the repo to a path without ~ + & ' or similar characters`);
     }
 
-    const made = withLock(dir, () => {
+    // Reserve the slot under the lock, run the slow git work outside it, then finalise under the lock.
+    const claimedAt = stamp();
+    withLock(dir, () => {
       ensureTeamDir(dir);
       const board = readBoard(dir);
       if (isLive(board.lanes[lane])) throw new Exit(2, `offlimits team: lane "${lane}" is already live`);
       if (Object.values(board.lanes).filter(isLive).length >= team.maxWorkers) {
         throw new Exit(2, `offlimits team: maxWorkers (${team.maxWorkers}) reached; finish or remove a lane first`);
       }
-      const m = addLane(mainRoot, team, lane, { base: flags.base || resolveBase(mainRoot, team.base) });
+      board.lanes[lane] = { stage: 'briefed', note: 'creating', model, createdAt: claimedAt, updatedAt: claimedAt };
+      writeBoard(dir, board);
+    });
+    let made = null;
+    try {
+      made = (deps.addLane ?? addLane)(mainRoot, team, lane, { base: flags.base || resolveBase(mainRoot, team.base) });
       let startSha = null;
       try {
-        startSha = execFileSync('git', ['rev-parse', m.branch], { cwd: mainRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
+        startSha = execFileSync('git', ['rev-parse', made.branch], { cwd: mainRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
       } catch { /* recorded as null */ }
       fs.writeFileSync(briefPath, (flags.night ? 'mode: night\n\n' : '') + brief);
-      const at = stamp();
-      board.lanes[lane] = { stage: 'briefed', model, branch: m.branch, worktree: m.worktree, base: m.base, startSha, brief: briefPath, createdAt: at, updatedAt: at };
-      writeBoard(dir, board);
-      return m;
-    });
+      updateLane(dir, lane, { branch: made.branch, worktree: made.worktree, base: made.base, startSha, brief: briefPath, note: undefined });
+    } catch (e) {
+      let extra = '';
+      if (made) {
+        try { removeLane(mainRoot, { branch: made.branch, worktree: made.worktree }, { force: true }); } catch (r) {
+          extra = ` (could not remove worktree ${made.worktree}: ${r.message})`;
+        }
+      }
+      try {
+        withLock(dir, () => {
+          const board = readBoard(dir);
+          delete board.lanes[lane];
+          writeBoard(dir, board);
+        });
+      } catch { /* placeholder stays; board shows it as creating */ }
+      if (extra) err(`offlimits team:${extra}`);
+      throw e;
+    }
     out(`lane ${lane}: ${made.branch} in ${made.worktree} (stage briefed, model ${model})`);
     if (flags.print || team.terminal === 'none' || !spec) {
       out(hint);

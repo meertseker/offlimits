@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { commonRoot } from '../git.mjs';
 
@@ -18,23 +19,42 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/** Synchronous exclusive lock on `dir/lock`. Breaks locks older than staleMs. */
+function readToken(p) {
+  try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
+}
+
+/**
+ * Synchronous exclusive lock on `dir/lock`. The lock file holds a unique token; release deletes it only if it
+ * still holds ours. A lock older than staleMs is broken by renaming it aside (only one waiter wins the rename).
+ */
 export function withLock(dir, fn, { timeoutMs = 2000, staleMs = 10000 } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, 'lock');
+  const token = process.pid + '-' + randomBytes(8).toString('hex');
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      fs.closeSync(fs.openSync(p, 'wx'));
+      const fd = fs.openSync(p, 'wx');
+      try { fs.writeSync(fd, token); } finally { fs.closeSync(fd); }
       break;
     } catch (e) {
       if (e.code !== 'EEXIST' && e.code !== 'EPERM' && e.code !== 'EACCES') throw e;
       try {
         if (Date.now() - fs.statSync(p).mtimeMs > staleMs) {
-          fs.rmSync(p, { force: true });
+          const seen = readToken(p);
+          const aside = p + '.stale-' + token;
+          fs.renameSync(p, aside);
+          // We may have renamed a fresh lock that replaced the stale one between stat and rename: put it back.
+          let fresh = false;
+          try { fresh = Date.now() - fs.statSync(aside).mtimeMs <= staleMs || readToken(aside) !== seen; } catch { /* gone */ }
+          if (fresh && !fs.existsSync(p)) {
+            try { fs.renameSync(aside, p); } catch { fs.rmSync(aside, { force: true }); }
+          } else {
+            fs.rmSync(aside, { force: true });
+          }
           continue;
         }
-      } catch { /* lock vanished: retry */ }
+      } catch { /* lock vanished or lost the rename: retry */ }
       if (Date.now() >= deadline) throw new Error('team state is locked');
       sleep(25);
     }
@@ -42,7 +62,7 @@ export function withLock(dir, fn, { timeoutMs = 2000, staleMs = 10000 } = {}) {
   try {
     return fn();
   } finally {
-    try { fs.rmSync(p, { force: true }); } catch { /* best effort */ }
+    try { if (readToken(p) === token) fs.rmSync(p, { force: true }); } catch { /* best effort */ }
   }
 }
 
@@ -93,7 +113,12 @@ export function reserve(dir, key, { floor = 0, width = 4, lane = '' } = {}) {
   return withLock(dir, () => {
     const file = path.join(dir, 'reservations.json');
     let all = {};
-    try { all = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { /* fresh */ }
+    let text = null;
+    try { text = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (text !== null) {
+      try { all = JSON.parse(text); } catch { all = null; }
+      if (all === null || typeof all !== 'object' || Array.isArray(all)) throw new Error('reservations.json is unreadable; fix or delete it');
+    }
     const entry = all[key] || { last: 0, history: [] };
     const value = Math.max(Number(entry.last) || 0, floor) + 1;
     entry.last = value;

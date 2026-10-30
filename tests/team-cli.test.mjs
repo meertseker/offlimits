@@ -465,3 +465,43 @@ test('coordinator child env uses the configured roleEnv; terminal env is scrubbe
     assert.ok(seen[0].spec.args.join(' ').includes('MY_ROLE'));
   } finally { f.cleanup(); }
 });
+
+test('another lane can update the board while a slow addLane runs, and it survives', async () => {
+  const f = fixture();
+  try {
+    const { addLane } = await import('../hooks/lib/team/lanes.mjs');
+    const { updateLane } = await import('../hooks/lib/team/state.mjs');
+    let seenDuring = null;
+    const slow = (...a) => {
+      updateLane(f.dir, 'other', { stage: 'building' }); // throws "team state is locked" if the launcher holds the lock
+      seenDuring = JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes.demo;
+      return addLane(...a);
+    };
+    const w = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print'], { extra: { addLane: slow } });
+    assert.equal(w.code, 0, w.err);
+    assert.equal(seenDuring.note, 'creating');
+    const lanes = JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes;
+    assert.equal(lanes.other.stage, 'building');
+    assert.equal(lanes.demo.branch, 'feat/demo');
+    assert.equal(lanes.demo.note, undefined);
+    assert.ok(lanes.demo.startSha);
+  } finally { f.cleanup(); }
+});
+
+test('a failing addLane removes the placeholder; a failing finalise rolls the worktree back', async () => {
+  const f = fixture();
+  try {
+    const boom = () => { throw new Error('git exploded'); };
+    const r = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print'], { extra: { addLane: boom } });
+    assert.equal(r.code, 1);
+    assert.match(r.err, /git exploded/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes, {});
+    // brief write fails (a directory sits where the brief file goes): worktree and branch are rolled back
+    fs.mkdirSync(path.join(f.dir, 'briefs', 'demo.md'), { recursive: true });
+    const r2 = await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print']);
+    assert.equal(r2.code, 1);
+    assert.ok(!fs.existsSync(path.join(f.tmp, 'repo-demo')));
+    assert.equal(git(f.root, 'branch', '--list', 'feat/demo'), '');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8')).lanes, {});
+  } finally { f.cleanup(); }
+});

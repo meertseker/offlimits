@@ -168,8 +168,10 @@ test('claudeInvocation: windows prefers .exe, wraps .cmd via cmd.exe, validates 
   const args = ['--model', 'opus', '-n', 'coordinator', '--continue'];
   const shim = String.raw`C:\n\claude.cmd`;
   const exePath = String.raw`C:\b\claude.exe`;
-  const exe = claudeInvocation(args, { platform: 'win32', where: () => [shim, exePath] });
+  const exe = claudeInvocation(args, { platform: 'win32', where: () => [exePath, shim] });
   assert.equal(exe.file, exePath);
+  const ps1 = String.raw`C:\x\claude.ps1`;
+  assert.equal(claudeInvocation(args, { platform: 'win32', where: () => [ps1, shim, exePath] }).file, 'cmd.exe');
   assert.deepEqual(exe.args, args);
   const cmd = claudeInvocation(args, { platform: 'win32', where: () => [shim] });
   assert.equal(cmd.file, 'cmd.exe');
