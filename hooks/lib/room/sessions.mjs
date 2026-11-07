@@ -56,7 +56,8 @@ export function readSessionTail(file, { bytes = TAIL_BYTES } = {}) {
       case 'custom-title': custom = str(o.customTitle ?? o.title, 120) ?? custom; break;
       case 'last-prompt': out.lastPrompt = str(o.lastPrompt, 200) ?? out.lastPrompt; break;
       case 'system':
-        if (o.subtype === 'away_summary') out.summary = str(o.content) ?? out.summary;
+        // Claude Code appends a settings hint to its recaps; the room shows only the recap itself
+        if (o.subtype === 'away_summary') out.summary = str(typeof o.content === 'string' ? o.content.replace(/\s*\([^()]*\/config\)\s*$/i, '') : o.content) ?? out.summary;
         break;
       case 'assistant': {
         const m = o.message || {};
@@ -140,7 +141,7 @@ export function readSessions(claudeDir, dirs, { now = Date.now, liveMinutes = 30
     if (a.state === 'waiting') {
       const ca = a.role === 'coordinator' ? 0 : 1;
       const cb = b.role === 'coordinator' ? 0 : 1;
-      return ca !== cb ? ca - cb : b.ageMs - a.ageMs;
+      if (ca !== cb) return ca - cb;
     }
     return a.ageMs - b.ageMs;
   });

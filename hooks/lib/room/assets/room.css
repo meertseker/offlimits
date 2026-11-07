@@ -160,7 +160,7 @@ button { font: inherit; color: inherit; }
 .lane[aria-expanded="true"] { background: var(--deniz-ac); }
 .lane .c-state, .lane .c-act { font-size: 13px; }
 .lane .c-act { color: var(--ikincil); }
-.lane .c-state { display: flex; align-items: baseline; flex-wrap: wrap; }
+.lane .c-state { display: block; }
 .live { display: inline-block; font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 999px; border: 1px solid var(--canli); margin-left: 8px; color: var(--murekkep); }
 .trace { display: flex; gap: 3px; align-items: center; }
 .seg { display: inline-block; width: 16px; height: 6px; border-radius: 2px; background: var(--kagit2); }

@@ -37,9 +37,10 @@ function world() {
   fs.mkdirSync(pb, { recursive: true });
   fs.writeFileSync(path.join(pa, 'aaaaaaaa-0001.jsonl'), jsonl([
     L.title('Koordinasyon defteri'), L.prompt(40 * MIN, 'durum ne'), L.last('durum ne'), L.assistant(39 * MIN, 'tool_use'), L.result(39 * MIN),
-    L.assistant(38 * MIN, 'end_turn'), L.turn(38 * MIN), L.away(35 * MIN, 'Koordine ediyorum; yayın bekliyor.'),
+    L.assistant(38 * MIN, 'end_turn'), L.turn(38 * MIN), L.away(35 * MIN, 'Koordine ediyorum; yayın bekliyor. (disable recaps in /config)'),
   ]));
   fs.writeFileSync(path.join(pa, 'bbbbbbbb-0002.jsonl'), jsonl([L.prompt(10 * MIN, 'build it'), L.assistant(5 * MIN, 'tool_use'), L.result(5 * MIN)]));
+  fs.writeFileSync(path.join(pa, 'ffffffff-0006.jsonl'), jsonl([L.prompt(9 * MIN, 'q'), L.assistant(8 * MIN, 'end_turn')]));
   fs.writeFileSync(path.join(pa, 'cccccccc-0003.jsonl'), jsonl([L.prompt(30 * MIN, 'go'), L.assistant(20 * MIN, 'tool_use'), L.result(20 * MIN)]));
   fs.writeFileSync(path.join(pa, 'dddddddd-0004.jsonl'), jsonl([L.prompt(5 * 60 * MIN, 'old'), L.assistant(4 * 60 * MIN, 'tool_use'), L.result(4 * 60 * MIN)]));
   fs.writeFileSync(path.join(pb, 'eeeeeeee-0005.jsonl'), jsonl([
@@ -83,7 +84,7 @@ test('readSessions: waiting, working, stalled, quiet; coordinator label; newest 
     assert.equal(by.eeeeeeee.lane, 'gece');
     assert.equal(by.eeeeeeee.role, 'lane');
     assert.equal(by.eeeeeeee.state, 'waiting');
-    assert.deepEqual(r.sessions.map((s) => s.shortId), ['aaaaaaaa', 'eeeeeeee', 'bbbbbbbb', 'cccccccc', 'dddddddd'], 'waiting first (coordinator, then longest wait), then working and quiet, newest first');
+    assert.deepEqual(r.sessions.map((s) => s.shortId), ['aaaaaaaa', 'ffffffff', 'eeeeeeee', 'bbbbbbbb', 'cccccccc', 'dddddddd'], 'waiting first (coordinator first), then working and quiet; newest first within each');
     assert.deepEqual(r.limitNotice, { ts: at(60 * MIN), text: "You've hit your weekly limit · resets 2pm (Europe/London)", project: 'p' });
   } finally { w.done(); }
 });
@@ -92,7 +93,7 @@ test('readSessions matches folder names case-insensitively on Windows only', () 
   const w = world();
   try {
     const lower = [{ dir: w.dirA.toLowerCase(), project: 'p', lane: null }];
-    assert.equal(readSessions(w.root, lower, { now: () => NOW, liveMinutes: 30, coordinatorIds: [], platform: 'win32' }).sessions.length, 4);
+    assert.equal(readSessions(w.root, lower, { now: () => NOW, liveMinutes: 30, coordinatorIds: [], platform: 'win32' }).sessions.length, 5);
     assert.equal(readSessions(w.root, lower, { now: () => NOW, liveMinutes: 30, coordinatorIds: [], platform: 'linux' }).sessions.length, 0);
     assert.deepEqual(readSessions(path.join(w.root, 'missing'), lower, { now: () => NOW, liveMinutes: 30, coordinatorIds: [] }).sessions, []);
   } finally { w.done(); }

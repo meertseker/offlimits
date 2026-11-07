@@ -19,6 +19,9 @@
   };
 
   const ui = { data: null, tab: store.get('tab', 'board'), open: null, confirm: null, flash: null, status: 'loading', busy: false, theme: store.get('theme', '') };
+  const TABS = ['board', 'today', 'metrics'];
+  // a link like /#metrics opens that tab
+  if (TABS.includes(window.location.hash.slice(1))) ui.tab = window.location.hash.slice(1);
   let S = {};
 
   const t = (k, vars) => String(Object.prototype.hasOwnProperty.call(S, k) ? S[k] : k)
@@ -205,7 +208,12 @@
   function tabs() {
     const tab = (id, label) => h('button', {
       type: 'button', role: 'tab', class: 'tab', id: `tab-${id}`, 'aria-selected': String(ui.tab === id), 'aria-controls': 'panel', 'data-k': `tab-${id}`,
-      onclick: () => { ui.tab = id; store.set('tab', id); render(); },
+      onclick: () => {
+        ui.tab = id;
+        store.set('tab', id);
+        try { window.history.replaceState(null, '', `#${id}`); } catch { /* no history API: the tab still changes */ }
+        render();
+      },
     }, label);
     return h('nav', { class: 'tabs', 'aria-label': t('title') },
       h('div', { class: 'tablist', role: 'tablist' }, tab('board', t('tab.board')), tab('today', t('tab.today')), tab('metrics', t('tab.metrics'))));
@@ -350,7 +358,8 @@
     if (p.coordinator.current) {
       const s = p.coordinator.session;
       head.push(h('span', { class: 'meta' }, h('i', { class: s ? sessionDot(s) : 'dot soluk', 'aria-hidden': 'true' }),
-        `${t('project.coordinator')}: `, s ? `${s.title || s.shortId}, ${sessionText(s)}` : t('project.coordinatorNone')));
+        `${t('project.coordinator')}: `, s ? `${s.title || s.shortId}, ${sessionText(s)}` : t('project.coordinatorNone'),
+        h('span', { class: 'mono' }, ` ${short(p.coordinator.current)}`)));
     }
     parts.push(h('div', { class: 'project-head' }, head));
     for (const r of p.repos) parts.push(repo(p, r));
@@ -420,7 +429,8 @@
   function laneRow(key, l) {
     const open = ui.open === key;
     const live = (l.sessions || []).some((s) => s.state !== 'quiet');
-    const sub = l.main ? t('state.main') : l.team ? l.team.lane : l.ledger && l.ledger.status ? `${t('lane.ledger')}: ${l.ledger.status}` : '';
+    const status = l.ledger && l.ledger.status ? l.ledger.status : '';
+    const sub = l.main ? t('state.main') : l.team ? l.team.lane : status ? `${t('lane.ledger')}: ${status.length > 90 ? `${status.slice(0, 90)}…` : status}` : '';
     return h('button', {
       type: 'button', class: 'lane', 'aria-expanded': String(open), 'data-k': `lane:${key}`,
       onclick: () => { ui.open = open ? null : key; render(); },
