@@ -18,6 +18,7 @@ test('event metrics: merges, first-pass green, review findings, brief to merge',
   ];
   const m = computeMetrics({ events, requests: [], lanes: [], history: null, now: () => NOW });
   assert.equal(m.lanesMerged7d, 2);
+  assert.equal(m.events, 11);
   assert.deepEqual(m.firstPassGreen, { n: 2, share: 0.5 });
   assert.deepEqual(m.reviewFindings, { n: 3, share: 2 / 3 });
   assert.deepEqual(m.briefToMerge, { n: 2, medianH: 15, p90H: 20 });
@@ -43,6 +44,7 @@ test('approval answer time is never negative; lane counts; prompts and orchestra
 
 test('no data gives nulls, not zeros pretending to be measurements', () => {
   const m = computeMetrics({ events: [], requests: [], lanes: [], history: null, now: () => NOW });
+  assert.equal(m.events, 0);
   assert.equal(m.firstPassGreen, null);
   assert.equal(m.reviewFindings, null);
   assert.equal(m.briefToMerge, null);

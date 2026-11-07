@@ -67,6 +67,7 @@ export function computeMetrics({ events = [], requests = [], lanes = [], history
     ? { thisWeek: history.thisWeek?.orchestration ?? null, lastWeek: history.lastWeek?.orchestration ?? null }
     : null;
   return {
+    events: sorted.length,
     lanesMerged7d,
     firstPassGreen,
     reviewFindings,
