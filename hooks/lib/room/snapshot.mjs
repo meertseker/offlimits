@@ -80,7 +80,7 @@ function teamQuestions(repoPath, project) {
 const shortSha = (s) => (s ? String(s).slice(0, 8) : null);
 
 async function readProject(p, ctx) {
-  const { now, staleDays, cache, problems } = ctx;
+  const { now, staleDays, cache, problems, readRepoFn } = ctx;
   const say = (msg) => problems.push(`${p.name}: ${msg}`);
   const out = { id: p.id, name: p.name, repos: [], facts: [], ledgers: [], decisions: [], approvals: null, loops: [], inbox: [], logs: [], questions: [], coordinator: { ids: [], current: null, session: null }, sessions: [] };
 
@@ -114,7 +114,8 @@ async function readProject(p, ctx) {
   out.repos = await Promise.all(p.repos.map(async (repo) => {
     let teamDeliveries = [];
     try { teamDeliveries = listMd(path.join(repo.path, '.offlimits', 'team', 'deliveries')); } catch { /* no team mode */ }
-    const r = await readRepo(repo, { now, staleDays, deliveryFiles: [...deliveryFiles, ...teamDeliveries], ledgerRows: rows });
+    const r = await readRepoFn(repo, { now, staleDays, deliveryFiles: [...deliveryFiles, ...teamDeliveries], ledgerRows: rows })
+      .catch((e) => ({ name: repo.name, path: repo.path, base: repo.base, baseHead: null, todayCommits: [], lanes: [], error: `cannot read ${repo.path} (${e && e.message ? e.message : e})` }));
     if (r.error) say(r.error);
     out.questions.push(...teamQuestions(repo.path, p.id));
     return r;
@@ -160,12 +161,12 @@ async function readProject(p, ctx) {
  * @param {object} config room config
  * @param {{now?: () => number, env?: object, homedir?: () => string, problems?: string[], platform?: string}} [opts]
  */
-export async function buildSnapshot(config, { now = Date.now, env = process.env, homedir = os.homedir, problems: given = [], platform = process.platform } = {}) {
+export async function buildSnapshot(config, { now = Date.now, env = process.env, homedir = os.homedir, problems: given = [], platform = process.platform, readRepo: readRepoFn = readRepo } = {}) {
   const started = Date.now();
   const t = now();
   const problems = [...given];
   const cache = new Map();
-  const projects = await Promise.all(config.projects.map((p) => readProject(p, { now, staleDays: config.staleDays, cache, problems })));
+  const projects = await Promise.all(config.projects.map((p) => readProject(p, { now, staleDays: config.staleDays, cache, problems, readRepoFn })));
 
   const dirs = [];
   for (const p of projects) for (const r of p.repos) for (const l of r.lanes) dirs.push({ dir: l.path, project: p.id, lane: l.main ? null : l.id });

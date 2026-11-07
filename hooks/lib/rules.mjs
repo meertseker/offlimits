@@ -1,7 +1,7 @@
 // Decision entry point: dispatches a hook input to the shell or MCP rules.
 
 import { expandWithState } from './shell.mjs';
-import { checkSegment, resolveDir, SHELL_RULE_IDS } from './rules/shell-rules.mjs';
+import { checkHumanOnly, checkSegment, resolveDir, SHELL_RULE_IDS } from './rules/shell-rules.mjs';
 import { checkMcp } from './rules/mcp-rules.mjs';
 import { checkFileTool, checkBashWrite, checkRedirects } from './rules/file-rules.mjs';
 
@@ -83,8 +83,26 @@ function segmentCwd(base, cwd) {
  * `segCwd` (absolute directory the segment runs in, null when unknown),
  * `segEnvs` (variables set by earlier segments) and `heads` (branches checked out earlier).
  */
+/** The coordinator is trusted, except for what no agent may do: start the control room or change CLAUDECODE. */
+function coordinatorCheck(input, ctx) {
+  const tool = String(input?.tool_name ?? '');
+  if (tool !== 'Bash' && tool !== 'PowerShell') return null;
+  const command = String(input?.tool_input?.command ?? '');
+  // fast path: the coordinator's everyday commands never mention either
+  if (!/CLAUDECODE|\broom\b/i.test(command)) return null;
+  const opaque = { action: 'deny', rule: 'opaque-shell', reason: 'Command mentions CLAUDECODE or the control room and is too large to inspect in time.' };
+  if (command.length > BUDGET.maxBytes) return opaque;
+  const segs = expandWithState(command, BUDGET, { ps: tool === 'PowerShell' });
+  if (segs.overBudget) return opaque;
+  for (const { segment, cwd, envs } of segs) {
+    const d = checkHumanOnly(segment, { ...ctx, segCwd: segmentCwd(ctx.cwd, cwd), segEnvs: envs });
+    if (d) return d;
+  }
+  return null;
+}
+
 export function decide(input, ctx) {
-  if (ctx.role === 'coordinator') return ALLOW;
+  if (ctx.role === 'coordinator') return coordinatorCheck(input, ctx) ?? ALLOW;
   const tool = String(input?.tool_name ?? '');
   const toolInput = input?.tool_input ?? {};
 

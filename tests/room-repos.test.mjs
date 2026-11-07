@@ -56,21 +56,28 @@ test('lanes: the main checkout, a lane with work, a lane with nothing beyond the
     git(a, ['add', '.']);
     git(a, ['commit', '-m', 'work on a']);
     fs.writeFileSync(path.join(a, 'untracked.txt'), 'u');
-    f.add('repo-b', 'feat/b');
+    const b = f.add('repo-b', 'feat/b');
+    fs.writeFileSync(path.join(b, 'm.txt'), 'm');
+    git(b, ['add', '.']);
+    git(b, ['commit', '-m', 'work on b']);
+    git(f.root, ['merge', '--no-ff', '--no-edit', 'feat/b']);
+    f.add('repo-fresh', 'feat/fresh');
     const r = await readRepo({ name: 'repo', path: f.root, base: 'main' }, opts());
     assert.equal(r.error, undefined);
     assert.equal(r.base, 'main');
-    assert.equal(r.baseHead.subject, 'init');
+    assert.equal(r.baseHead.subject, "Merge branch 'feat/b'");
     const l = byId(r);
     assert.equal(l.repo.main, true);
     assert.equal(l.repo.state, 'main');
     assert.equal(l.repo.branch, 'main');
     assert.equal(l['repo-a'].branch, 'feat/a');
-    assert.deepEqual([l['repo-a'].state, l['repo-a'].ahead, l['repo-a'].behind, l['repo-a'].dirty, l['repo-a'].merged], ['building', 1, 0, 1, false]);
+    assert.deepEqual([l['repo-a'].state, l['repo-a'].ahead, l['repo-a'].behind, l['repo-a'].dirty, l['repo-a'].merged], ['building', 1, 2, 1, false], 'feat/b merged into main after a branched, so a is two behind');
     assert.equal(l['repo-a'].lastCommit.subject, 'work on a');
     assert.deepEqual(l['repo-a'].stage, { index: 3, name: 'building', inferred: true });
     assert.equal(l['repo-b'].state, 'merged');
     assert.deepEqual(l['repo-b'].stage, { index: 5, name: 'merged', inferred: true });
+    assert.notEqual(l['repo-fresh'].state, 'merged', 'a lane that has not started is not finished');
+    assert.deepEqual(l['repo-fresh'].stage, { index: 0, name: 'briefed', inferred: true });
   } finally { f.cleanup(); }
 });
 
@@ -129,9 +136,13 @@ test('a team board stage wins over the inferred one', async () => {
     const dir = path.join(f.root, '.offlimits', 'team');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'board.json'), JSON.stringify({ lanes: { a: { stage: 'designing', branch: 'feat/a', worktree: a, model: 'sonnet' } } }));
+    fs.writeFileSync(path.join(f.root, 'later.txt'), 'l');
+    git(f.root, ['add', '.']);
+    git(f.root, ['commit', '-m', 'base moves on']);
     const lane = byId(await readRepo({ name: 'repo', path: f.root, base: 'main' }, opts()))['repo-a'];
     assert.deepEqual(lane.team, { lane: 'a', stage: 'designing', note: null, model: 'sonnet' });
     assert.deepEqual(lane.stage, { index: 1, name: 'designing', inferred: false });
+    assert.notEqual(lane.state, 'merged', 'a board stage before merged is never reported as merged');
   } finally { f.cleanup(); }
 });
 

@@ -892,18 +892,32 @@ function agentSpawn(c) {
 
 const TEAM_SUBS = new Set(['worker', 'done', 'coordinator', 'init']);
 
-function teamLaunch(c) {
+/** The arguments after the team CLI (`team`, `offlimits-team`, `node .../team.mjs`), or null when the segment is not a team call. */
+function teamArgs(c) {
   const { name, args, raws } = c.info;
   // bash-style parsing eats backslashes in Windows paths, so look at the raw tokens too
   const isTeam = (a) => /(^|[\\/])team\.mjs$/i.test(a ?? '');
-  let rest;
   if (name === 'node') {
     const i = args.findIndex((a, k) => isTeam(a) || isTeam(raws[k]));
-    if (i < 0) return null;
-    rest = args.slice(i + 1);
-  } else if (name === 'team' || name === 'offlimits-team' || isTeam(name)) {
-    rest = args;
-  } else return null;
+    return i < 0 ? null : args.slice(i + 1);
+  }
+  if (name === 'team' || name === 'offlimits-team' || isTeam(name)) return args;
+  return null;
+}
+
+/** `team room` anywhere in the arguments (flags may come first): the control room answers approvals, so no agent starts it. */
+function roomLaunch(c) {
+  const rest = teamArgs(c);
+  if (!rest || !rest.includes('room')) return null;
+  return `${c.info.name} room answers approvals for the human; only a human terminal may start it ${shown(c)}.`;
+}
+
+function teamLaunch(c) {
+  const { name } = c.info;
+  const rest = teamArgs(c);
+  if (!rest) return null;
+  const room = roomLaunch(c);
+  if (room) return { action: 'deny', reason: room };
   const sub = rest.find((a) => !a.startsWith('-'));
   const worker = c.ctx.role === 'worker';
   // start opens a coordinator window: a human's own session (worker only through defaultRole) may; a launched worker or subagent may not
@@ -912,9 +926,7 @@ function teamLaunch(c) {
   let hit;
   if (TEAM_SUBS.has(sub)) hit = sub;
   else if (sub === 'start') hit = startDenied ? 'start' : undefined;
-  // the control room answers approvals: no worker, subagent or solo agent session starts it
-  else if (sub === 'room') hit = 'room';
-  else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || a === 'room' || (a === 'start' && startDenied));
+  else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || (a === 'start' && startDenied));
   // a launched worker or subagent whose subcommand is hidden behind a variable or substitution (team $T, team $(echo start))
   const SAFE_SUBS = ['board', 'stage', 'deliver', 'ask', 'reserve'];
   if (!hit && startDenied && !SAFE_SUBS.includes(sub) && rest.some((a) => /[$`]/.test(a))) {
@@ -924,9 +936,7 @@ function teamLaunch(c) {
   if (!worker && hit === 'init') return null;
   return {
     action: worker ? 'deny' : 'ask',
-    reason: hit === 'room'
-      ? `${name} room answers approvals for the human; only a human terminal may start it ${shown(c)}.`
-      : hit === 'start'
+    reason: hit === 'start'
       ? `${name} start opens a coordinator session, which a worker or subagent may not do ${shown(c)}.`
       : hit === 'init'
       ? `${name} init rewrites team configuration; re-run it from a terminal with: team init ${shown(c)}.`
@@ -945,14 +955,12 @@ function readOnlyMention(c) {
   return Boolean(g && GIT_READ.has(g.sub));
 }
 
-function roleSpoof(c) {
-  const role = c.ctx.policy.roleEnv;
+/** A change to environment variable `role` in this segment: assignment, unset, export, PowerShell env drive, registry. */
+function envChange(c, role, say, sayUnset) {
   const R = esc(role);
-  const s = `(matched "${clip(c.segment)}")`;
-  const say = `assigning ${role} would change the agent's own role ${s}.`;
   if (c.assignments.some((a) => a.split('=')[0].toLowerCase() === role.toLowerCase())) return say;
   if (c.info.envs.some((a) => a.split('=')[0].toLowerCase() === role.toLowerCase())) return say;
-  if (c.info.unset.some((u) => u.toLowerCase() === role.toLowerCase())) return `unsetting ${role} would change the agent's own role ${s}.`;
+  if (c.info.unset.some((u) => u.toLowerCase() === role.toLowerCase())) return sayUnset;
   const t = c.info.toks;
   let i = 0;
   while (i < t.length && (Object.hasOwn(WRAPPERS, base(t[i])) || ASSIGN.test(t[i]) || t[i].startsWith('-'))) {
@@ -970,9 +978,48 @@ function roleSpoof(c) {
     new RegExp(`\\breg(\\.exe)?\\s+(add|delete)\\b.*\\b${R}\\b`, 'i'),
   ];
   if (patterns.some((p) => p.test(c.rest) || p.test(c.segment))) return say;
+  return null;
+}
+
+/** CLAUDECODE marks a command as running inside Claude Code; the team CLI keeps human-only commands out of agents with it. */
+function claudeCodeSpoof(c) {
+  const s = `(matched "${clip(c.segment)}")`;
+  return envChange(c, 'CLAUDECODE', `changing CLAUDECODE would make this command look like it runs outside Claude Code ${s}.`,
+    `unsetting CLAUDECODE would make this command look like it runs outside Claude Code ${s}.`);
+}
+
+function roleSpoof(c) {
+  const role = c.ctx.policy.roleEnv;
+  const R = esc(role);
+  const s = `(matched "${clip(c.segment)}")`;
+  const say = `assigning ${role} would change the agent's own role ${s}.`;
+  const own = envChange(c, role, say, `unsetting ${role} would change the agent's own role ${s}.`);
+  if (own) return own;
+  const cc = claudeCodeSpoof(c);
+  if (cc) return cc;
   if (readOnlyMention(c)) return null;
   if (new RegExp(`\\b${R}\\b`, 'i').test(c.segment) && /coordinator/i.test(c.segment)) {
     return `segment writes ${role} together with "coordinator", which would promote a later session ${s}.`;
+  }
+  return null;
+}
+
+/**
+ * Checks that hold for every role, the coordinator included: no agent starts the control room
+ * (`team room` answers approvals for the human) and no agent changes CLAUDECODE.
+ * @returns {{action: 'deny', rule: string, reason: string} | null}
+ */
+export function checkHumanOnly(segment, ctx) {
+  const { assignments, rest } = stripAssignments(segment);
+  if (rest.startsWith(OPAQUE_PREFIX)) return { action: 'deny', rule: 'opaque-shell', reason: 'Command mentions CLAUDECODE or the control room and cannot be inspected.' };
+  const vs = variants(rest);
+  if (vs === null) return { action: 'deny', rule: 'opaque-shell', reason: 'Command mentions CLAUDECODE or the control room and is too costly to inspect.' };
+  for (const v of vs) {
+    const c = { segment, rest, assignments, ctx, info: v.info, primary: v.primary };
+    const spoof = claudeCodeSpoof(c);
+    if (spoof) return { action: 'deny', rule: 'role-spoof', reason: spoof };
+    const room = roomLaunch(c);
+    if (room) return { action: 'deny', rule: 'team-launch', reason: room };
   }
   return null;
 }

@@ -175,7 +175,9 @@ export function readHistory(claudeDir, projects, { now = Date.now, days = 14, pa
   const week = (i) => ({ prompts: 0, hits: 0, i });
   const weeks = [week(0), week(1)];
   let lines = [];
-  try { lines = readTail(path.join(claudeDir, 'history.jsonl'), HISTORY_BYTES); } catch { /* no history */ }
+  try { lines = readTail(path.join(claudeDir, 'history.jsonl'), HISTORY_BYTES); } catch {
+    return null;
+  }
   for (const line of lines) {
     if (!line.trim()) continue;
     let o;

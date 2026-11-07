@@ -16,7 +16,6 @@ const ALIAS = new Map(Object.entries(KEYS).flatMap(([field, names]) => names.map
 const HEADER = /^([^:\-*\s][^:]{0,40}):\s*(.*)$/;
 const OPTION = /^\s*[-*]\s*([A-Z])\s*[:)]\s*(.*\S)\s*$/;
 const ISO = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z/;
-const ID_RE = /^[\w.-]{1,80}$/;
 const MAX_READ = 256 * 1024;
 const MAX_NOTE = 300;
 
@@ -25,7 +24,7 @@ const MAX_NOTE = 300;
  * @param {{prefix: string}} opts
  */
 export function parseRequest(text, { prefix }) {
-  const lines = String(text ?? '').split(/\r?\n/);
+  const lines = String(text ?? '').replace(/^\uFEFF/, '').split(/\r?\n/);
   const header = { id: null, title: null, from: null, date: null, impact: null, reversible: null, due: null };
   const options = [];
   const answers = [];
@@ -73,13 +72,25 @@ function parseDate(s) {
   return Number.isFinite(t) ? t : null;
 }
 
+/** Text and encoding of a request file: UTF-16LE with its BOM (PowerShell 5.1 Out-File), else UTF-8 with any BOM removed. */
+function decode(buf) {
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return { text: buf.subarray(2).toString('utf16le'), enc: 'utf16le' };
+  return { text: buf.toString('utf8').replace(/^\uFEFF/, ''), enc: 'utf8' };
+}
+
 function readHead(file) {
   const fd = fs.openSync(file, 'r');
   try {
     const buf = Buffer.alloc(MAX_READ);
     const n = fs.readSync(fd, buf, 0, MAX_READ, 0);
-    return buf.subarray(0, n).toString('utf8');
+    return decode(buf.subarray(0, n)).text;
   } finally { fs.closeSync(fd); }
+}
+
+/** A request id is a file name without `.md`: any letters and spaces, no separators, drive colons, wildcards or control characters. */
+function validId(id) {
+  return typeof id === 'string' && id.length >= 1 && id.length <= 120 && id === id.trim()
+    && !/[\\/:*?"<>|\u0000-\u001f\u007f]/.test(id) && !/^\.+$/.test(id);
 }
 
 const ignored = (cfg, name) => (cfg.ignore || []).some((x) => x.toLowerCase() === name.toLowerCase());
@@ -125,14 +136,15 @@ const oneLine = (s) => String(s ?? '').replace(/[\r\n\t]+/g, ' ').replace(/[\u00
  * @returns {{line: string, file: string}}
  */
 export function answerRequest(cfg, { id, option, note }, { now = Date.now } = {}) {
-  if (typeof id !== 'string' || !ID_RE.test(id) || /^\.+$/.test(id)) throw new RoomError(400, 'bad-id', 'request id is not valid');
+  if (!validId(id)) throw new RoomError(400, 'bad-id', 'request id is not valid');
   const name = `${id}.md`;
   const file = path.join(cfg.dir, name);
   if (path.dirname(path.resolve(file)) !== path.resolve(cfg.dir) || ignored(cfg, name)) throw new RoomError(404, 'not-found', `no request ${id}`);
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch {
+  let raw;
+  try { raw = fs.readFileSync(file); } catch {
     throw new RoomError(404, 'not-found', `no request ${id}`);
   }
+  const { text, enc } = decode(raw);
   const r = parseRequest(text, { prefix: cfg.answerPrefix });
   if (r.answered) throw new RoomError(409, 'already-answered', `request ${id} is already answered`, { answer: r.answers[r.answers.length - 1].text });
   if (typeof option !== 'string' || !r.options.some((o) => o.key === option)) throw new RoomError(400, 'bad-option', `request ${id} has no option ${option}`);
@@ -140,6 +152,7 @@ export function answerRequest(cfg, { id, option, note }, { now = Date.now } = {}
   const line = answerLine({ prefix: cfg.answerPrefix, option, note: cleanNote, actor: oneLine(cfg.actor), channel: oneLine(cfg.channel), at: new Date(now()).toISOString() });
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const lead = text.length && !text.endsWith('\n') ? eol : '';
-  fs.appendFileSync(file, `${lead}${line}${eol}`);
+  const chunk = `${lead}${line}${eol}`;
+  fs.appendFileSync(file, enc === 'utf16le' ? Buffer.from(chunk, 'utf16le') : chunk);
   return { line, file };
 }

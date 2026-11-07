@@ -143,6 +143,6 @@ test('readHistory: per day and per project for 14 days, slash commands skipped, 
     assert.deepEqual(h.lastWeek, { prompts: 1, orchestration: 1 });
     const none = readHistory(root, [], { now: () => NOW, days: 14, patterns: [] });
     assert.equal(none.thisWeek.orchestration, null);
-    assert.equal(readHistory(path.join(root, 'missing'), [], { now: () => NOW }).thisWeek.prompts, 0);
+    assert.equal(readHistory(path.join(root, 'missing'), [], { now: () => NOW }), null, 'no history file means no data');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -83,6 +83,23 @@ test('pause: pause value and the stop marker; pretty JSON stays pretty', () => {
   } finally { w.done(); }
 });
 
+test('a BOM and CRLF in the status file survive a rewrite', () => {
+  const w = world({ status: '\uFEFF{\r\n  "durum": "DEVAM",\r\n  "not": "ş"\r\n}\r\n' });
+  try {
+    setLoop(w.cfg, 'pause', { now: () => NOW });
+    assert.equal(fs.readFileSync(path.join(w.dir, 'durum.json'), 'utf8'), '\uFEFF{\r\n  "durum": "DURAKLATILDI",\r\n  "not": "ş"\r\n}\r\n');
+  } finally { w.done(); }
+});
+
+test('a loop folder that does not exist is refused and not created', () => {
+  const w = world();
+  try {
+    const cfg = { ...w.cfg, dir: path.join(w.dir, 'typo', '.dongu') };
+    assert.throws(() => setLoop(cfg, 'pause', { now: () => NOW }), (e) => e instanceof RoomError && e.status === 409);
+    assert.ok(!fs.existsSync(path.join(w.dir, 'typo')));
+  } finally { w.done(); }
+});
+
 test('a bad action is refused; a missing status file is created on resume', () => {
   const w = world({ status: null });
   try {

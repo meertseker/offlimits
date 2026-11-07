@@ -7,7 +7,8 @@ Added:
 - `team room`: the control room, a local page on 127.0.0.1 over every configured project: lanes (worktrees) with their stage, divergence, activity, delivery note and ledger status; the Claude Code sessions that are working or waiting for you; unanswered approval requests; night loops; inbox folders and log watches; ledger sections; the day's timeline; and metrics. It answers an approval request with one appended line and pauses or resumes a loop, each after a confirmation, and writes nothing else. Configuration in `~/.offlimits/room.json`; without it, the current repository. See `docs/room.md`.
 - The control room also reads hand-built setups (Markdown ledgers, approval folders, loop folders), so a project can use it before it moves to team mode. The page is in English or Turkish.
 - Event log: the team commands append one JSON line per state change to `.offlimits/team/events.jsonl` (`lane.briefed`, `lane.stage`, `lane.delivered` with the delivery note's checks, `lane.question`, `reserve`, `lane.merged`, `lane.abandoned`). `team event <type>` records deploys, review verdicts and notes, for the coordinator and human terminals. The schema carries model, tokens, cost, checks, verdict and intervention fields for metrics.
-- `team-launch` also denies `team room` to workers and subagents and asks in solo mode. The CLI refuses `room` inside Claude Code in every role, because the room answers approvals for the human.
+- `team-launch` denies `team room` in every role, the coordinator included, wherever `room` appears among the arguments, and the CLI refuses it inside Claude Code, because the room answers approvals for the human.
+- `role-spoof` also denies changing `CLAUDECODE` (assign, unset, `env -u`, PowerShell `Env:`), in every role, so an agent cannot make a command look like it runs in a human terminal. These two checks are the only ones that also apply to the coordinator.
 
 Security:
 

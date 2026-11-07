@@ -109,7 +109,7 @@ Besides those, `team room` writes `~/.offlimits/room.pid` while it runs.
 
 ## Approval requests
 
-A request is a Markdown or text file in the approvals folder; its id is the file name without `.md`. The room reads:
+A request is a Markdown or text file in the approvals folder (UTF-8 with or without a BOM, or UTF-16LE as PowerShell 5.1 `Out-File` writes it); its id is the file name without `.md`, and may contain spaces and any letters. The room reads:
 
 - header lines `key: value` (English or Turkish keys): `id`; `subject`, `title`, `question` or `konu`; `from`, `requested by`, `session` or `isteyen oturum`; `date` or `tarih` (`2026-11-07 14:40`, `07.11.2026 14:40` or ISO); `impact` or `etki`; `reversible` or `geri alınabilir mi`; `due`, `deadline` or `son tarih`. Without a subject, the first line is the title.
 - options: lines like `- A: ship it today`.
@@ -182,7 +182,7 @@ A metric without data says so; nothing is estimated.
 - Writes are `POST` requests with `Content-Type: application/json`, the header `X-Offlimits-Room: 1`, the room's own `Origin`, and at most 16 KiB.
 - Responses carry a strict Content-Security-Policy (`default-src 'none'`; scripts and styles from the room only), `X-Frame-Options: DENY`, `nosniff` and `no-store`. The page builds its DOM with `textContent`; links are kept only for `http` and `https`.
 - Request ids and loop ids must match configured items; files are resolved inside the configured folder.
-- `team room` is refused inside Claude Code in every role (the room answers approvals for the human), and the gate rule `team-launch` denies it to workers and subagents and asks in solo mode.
+- `team room` is refused inside Claude Code: the CLI refuses it whenever `CLAUDECODE` is set, the gate rule `team-launch` denies it in every role (the coordinator included), and `role-spoof` denies changing `CLAUDECODE` to get around that. A wrapper script, or an environment change built from variables, is not seen by the gate (see limits.md).
 
 ## Limits
 

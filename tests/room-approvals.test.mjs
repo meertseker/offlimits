@@ -43,6 +43,40 @@ test('CRLF files parse the same', () => {
   assert.deepEqual(parseRequest(TR_ANSWERED.replace(/\n/g, '\r\n'), { prefix: 'CEVAP:' }), parseRequest(TR_ANSWERED, { prefix: 'CEVAP:' }));
 });
 
+test('a UTF-8 BOM does not hide the first header line', () => {
+  const r = parseRequest(`\uFEFF${TR_OPEN.replace(/\n/g, '\r\n')}`, { prefix: 'CEVAP:' });
+  assert.equal(r.header.id, '0711-150000');
+  assert.equal(r.options.length, 3);
+});
+
+test('UTF-16LE request files (PowerShell 5.1 Out-File) are listed and answered in UTF-16LE', () => {
+  const dir = tmp();
+  try {
+    const file = path.join(dir, 'u16.md');
+    fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(TR_OPEN.replace(/\n/g, '\r\n'), 'utf16le')]));
+    const { items } = listRequests(cfg(dir), { now: NOW });
+    assert.equal(items[0].header.title, 'Formdaki kutu kalkınca başvurular ölçüme gitsin mi?');
+    answerRequest(cfg(dir), { id: 'u16', option: 'A', note: 'şimdi' }, { now: NOW });
+    const buf = fs.readFileSync(file);
+    assert.deepEqual([buf[0], buf[1]], [0xff, 0xfe]);
+    assert.ok(buf.subarray(2).toString('utf16le').endsWith('CEVAP:\r\nCEVAP: A — şimdi - Mert, 2026-11-07T17:41:00.000Z, kumanda\r\n'));
+    assert.equal(listRequests(cfg(dir), { now: NOW }).items[0].answered, true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a request named with spaces and Turkish letters can be answered; separators cannot', () => {
+  const dir = tmp();
+  try {
+    fs.writeFileSync(path.join(dir, 'onay şube 2.md'), TR_OPEN);
+    const { items } = listRequests(cfg(dir), { now: NOW });
+    assert.equal(items[0].id, 'onay şube 2');
+    assert.ok(answerRequest(cfg(dir), { id: 'onay şube 2', option: 'B' }, { now: NOW }).line.startsWith('CEVAP: B'));
+    for (const bad of ['a/b', 'a\\b', '..', ' lead', 'x\u0007y', 'C:x']) {
+      assert.throws(() => answerRequest(cfg(dir), { id: bad, option: 'A' }, { now: NOW }), (e) => e instanceof RoomError && e.status === 400, JSON.stringify(bad));
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('English keys and the ANSWER prefix', () => {
   const r = parseRequest(EN_OPEN, { prefix: 'ANSWER:' });
   assert.equal(r.header.title, 'Ship the cart?');

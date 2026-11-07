@@ -112,6 +112,18 @@ test('a snapshot over every source: needs-you, lanes with ledger status, facts, 
   } finally { w.cleanup(); }
 });
 
+test('a repository reader that throws becomes one problem; the rest of the snapshot renders', async () => {
+  const w = world();
+  try {
+    const { config } = loadRoomConfig({ cwd: w.tmp, env: w.env, homedir: () => w.home });
+    const s = await buildSnapshot(config, { env: w.env, homedir: () => w.home, readRepo: async (repo) => { if (repo.name === 'shop') throw new Error('boom'); return { name: repo.name, path: repo.path, base: null, baseHead: null, todayCommits: [], lanes: [] }; } });
+    const shop = s.projects.find((p) => p.id === 'shop');
+    assert.match(shop.repos[0].error, /boom/);
+    assert.ok(s.problems.some((p) => p.includes('boom')));
+    assert.equal(shop.facts[0].value, '019');
+  } finally { w.cleanup(); }
+});
+
 test('a project whose sources all fail still renders the others', async () => {
   const w = world();
   try {

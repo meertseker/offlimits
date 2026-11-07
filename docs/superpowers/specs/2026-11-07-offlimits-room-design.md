@@ -107,7 +107,7 @@ Metrics derived from events: lanes merged in 7 days, first delivery with every c
 - The `Host` header must name the room's own address (DNS-rebinding defence). State-changing requests must be `POST` with `Content-Type: application/json`, the header `X-Offlimits-Room: 1` and an `Origin` equal to the room's origin.
 - Strict CSP (`default-src 'none'`, scripts and styles from the room only), `X-Frame-Options: DENY`, `nosniff`, `no-store`. The page builds DOM with `textContent`, never HTML strings.
 - Request ids and loop ids must match configured items; file paths are resolved inside the configured folder.
-- `team room` refuses to start inside Claude Code in every role, and the `team-launch` gate rule denies it to workers and subagents (asks in solo mode), because the room answers approvals for the human.
+- `team room` refuses to start inside Claude Code in every role: the CLI checks `CLAUDECODE`, the `team-launch` gate rule denies `room` for every role including the coordinator, and `role-spoof` denies changing `CLAUDECODE` (amended after the final review, which showed a coordinator could clear `CLAUDECODE` to pass the CLI check).
 - Honest limit: any process running as the same user can read the approval folder and append a line, with or without the room. The room does not make that worse and does not fix it.
 
 ## 8. The page

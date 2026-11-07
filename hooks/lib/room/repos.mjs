@@ -173,7 +173,9 @@ export async function readRepo(repo, { now = Date.now, staleDays = 5, deliveryFi
     const delivery = main ? null : findDelivery(w.branch, team ? team.lane : null, deliveryFiles);
     const ledger = main ? null : findLedger(w.branch, ledgerRows);
     const quietDays = lastCommit ? Math.floor((t - lastCommit.ts) / DAY) : null;
-    const isMerged = !main && ahead === 0 && merged && dirty === 0;
+    // at the base tip (behind 0) a lane has either just started or was merged a moment ago: call it started, not finished
+    const teamOpen = Boolean(team && team.stage && team.stage !== 'merged' && team.stage !== 'abandoned');
+    const isMerged = !main && !teamOpen && ahead === 0 && behind > 0 && merged && dirty === 0;
     const isDelivered = Boolean(delivery && (!lastCommit || delivery.mtime >= lastCommit.ts));
     let state = 'building';
     if (main) state = 'main';

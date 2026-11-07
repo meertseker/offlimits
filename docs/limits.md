@@ -55,10 +55,12 @@ For a boundary that holds against a determined agent, give it credentials that c
 ## Control room
 
 - **Any process running as you can answer an approval.** The room trusts the local machine: a process that can reach 127.0.0.1 and read the room's terminal output, or write the approvals folder directly, can answer a request with or without the room. The room adds no new way in and does not close this one. Keep approvals in a folder your agents do not write, or have the coordinator confirm answers it relies on.
+- **Starting the room from an agent.** The CLI refuses `team room` while `CLAUDECODE` is set, `team-launch` denies `room` in every role and `role-spoof` denies changing `CLAUDECODE`. An agent that builds the variable name at run time (`$n='CLAUDE'+'CODE'; Remove-Item "Env:$n"`), or runs a script it wrote, is not seen by the gate. This is the same class as the wrapper-script and variable limits above.
 - **No usage percentage.** Claude Code keeps no local file with the plan's usage, so the room cannot pause loops at a usage threshold. It shows the newest usage-limit notice it finds in the last day's transcripts instead.
 - **No health checks.** The room makes no outbound connections, so it does not fetch health URLs; deploys show up through the event log and git.
+- **No git fetch.** Ahead, behind and merged are measured against the base branch as your clone last saw it. Run `git fetch` (or let your coordinator do it) when the base is a remote branch such as `origin/main`.
 - **Ledger status is matched by text.** A lane gets a ledger row when a table cell names its branch as a whole word. A row that names the branch differently shows nothing, and when several rows name it the first one wins.
-- **Session state is read from transcript tails.** A session counts as waiting when its last turn ended, and as working when its last entry is a tool call or result. A session whose terminal was closed still looks waiting for up to 12 hours.
+- **Session state is read from transcript tails.** A session counts as waiting when its last turn ended, and as working when its last entry is a tool call or result. A session whose terminal was closed still looks waiting for up to 12 hours. A session stopped at a permission prompt or a question dialog writes nothing to its transcript, so it shows as working, then as "no step for" after 15 minutes, then as quiet; it never shows as waiting for you.
 - **Polling, not push.** The page refreshes every 20 seconds and when it gets focus; the room caches a snapshot for 10 seconds, and drops it after each write.
 - **Loops are not started.** Resume writes the run value and removes the stop marker; it does not start the loop process. The page shows the configured start hint when the log is not fresh.
 

@@ -123,6 +123,7 @@ function writeAtomic(file, text) {
  */
 export function setLoop(cfg, action, { now = Date.now } = {}) {
   if (action !== 'pause' && action !== 'resume') throw new RoomError(400, 'bad-action', 'action must be pause or resume');
+  if (!fs.existsSync(cfg.dir)) throw new RoomError(409, 'missing-dir', `the loop folder ${cfg.dir} does not exist`);
   const statusFile = inside(cfg.dir, cfg.status.file);
   if (!statusFile) throw new RoomError(409, 'bad-status-file', 'the status file is outside the loop folder');
   let current;
@@ -132,9 +133,13 @@ export function setLoop(cfg, action, { now = Date.now } = {}) {
   if (current.obj !== null && !isObject(current.obj)) throw new RoomError(409, 'not-an-object', `${cfg.status.file} is not a JSON object; fix it by hand`);
   const obj = isObject(current.obj) ? current.obj : {};
   obj[cfg.status.field] = action === 'pause' ? cfg.status.pause : cfg.status.run;
-  const pretty = typeof current.text === 'string' && /\n\s+"/.test(current.text);
-  fs.mkdirSync(cfg.dir, { recursive: true });
-  writeAtomic(statusFile, pretty ? `${JSON.stringify(obj, null, 2)}\n` : JSON.stringify(obj));
+  const text = typeof current.text === 'string' ? current.text : '';
+  const pretty = /\n\s+"/.test(text);
+  let out = pretty ? `${JSON.stringify(obj, null, 2)}\n` : JSON.stringify(obj);
+  // keep what the file had: a PowerShell 5.1 reader decodes a BOM-less file in the ANSI code page
+  if (text.includes('\r\n')) out = out.replace(/\n/g, '\r\n');
+  if (text.startsWith('\uFEFF')) out = `\uFEFF${out}`;
+  writeAtomic(statusFile, out);
   const stop = inside(cfg.dir, cfg.stopFile);
   if (stop) {
     if (action === 'pause') fs.writeFileSync(stop, '');

@@ -628,7 +628,20 @@
   {"name":"[room] [worker] node team.mjs room --no-open","tool_name":"Bash","tool_input":{"command":"node C:/x/offlimits/bin/team.mjs room --no-open"},"role":"worker","expect":"deny","rule":"team-launch"},
   {"name":"[room] [subagent of coordinator] team room","tool_name":"Bash","tool_input":{"command":"team room"},"role":"coordinator","expect":"deny","rule":"team-launch","agent_id":"sub-1"},
   {"name":"[room] [worker via defaultRole] team room","tool_name":"Bash","tool_input":{"command":"team room"},"role":"solo","expect":"deny","rule":"team-launch","policy":{"defaultRole":"worker"}},
-  {"name":"[room] team room --port 4800 (solo)","tool_name":"Bash","tool_input":{"command":"team room --port 4800"},"role":"solo","expect":"ask","rule":"team-launch"},
-  {"name":"[room] coordinator team room","tool_name":"Bash","tool_input":{"command":"team room"},"role":"coordinator","expect":"allow"},
-  {"name":"[room] [worker] team board","tool_name":"Bash","tool_input":{"command":"team board"},"role":"worker","expect":"allow"}
+  {"name":"[room] team room --port 4800 (solo)","tool_name":"Bash","tool_input":{"command":"team room --port 4800"},"role":"solo","expect":"deny","rule":"team-launch"},
+  {"name":"[room] coordinator team room","tool_name":"Bash","tool_input":{"command":"team room"},"role":"coordinator","expect":"deny","rule":"team-launch"},
+  {"name":"[room] [worker] team board","tool_name":"Bash","tool_input":{"command":"team board"},"role":"worker","expect":"allow"},
+  {"name":"[room] coordinator team --port 4800 room (flags first)","tool_name":"Bash","tool_input":{"command":"team --port 4800 room"},"role":"coordinator","expect":"deny","rule":"team-launch"},
+  {"name":"[room] solo team --no-open room (flags first)","tool_name":"Bash","tool_input":{"command":"team --no-open room"},"role":"solo","expect":"deny","rule":"team-launch"},
+  {"name":"[room] coordinator node team.mjs room","tool_name":"PowerShell","tool_input":{"command":"node C:\\x\\offlimits\\bin\\team.mjs room --no-open"},"role":"coordinator","expect":"deny","rule":"team-launch"},
+  {"name":"[room] coordinator pwsh -c team room","tool_name":"Bash","tool_input":{"command":"pwsh -Command \"team room\""},"role":"coordinator","expect":"deny","rule":"team-launch"},
+  {"name":"[claudecode] coordinator CLAUDECODE= team room","tool_name":"Bash","tool_input":{"command":"CLAUDECODE= team room --no-open"},"role":"coordinator","expect":"deny","rule":"role-spoof"},
+  {"name":"[claudecode] coordinator env -u CLAUDECODE node team.mjs room","tool_name":"Bash","tool_input":{"command":"env -u CLAUDECODE node C:/x/offlimits/bin/team.mjs room"},"role":"coordinator","expect":"deny","rule":"role-spoof"},
+  {"name":"[claudecode] worker unset CLAUDECODE","tool_name":"Bash","tool_input":{"command":"unset CLAUDECODE"},"role":"worker","expect":"deny","rule":"role-spoof"},
+  {"name":"[claudecode] solo $env:CLAUDECODE = $null","tool_name":"PowerShell","tool_input":{"command":"$env:CLAUDECODE = $null"},"role":"solo","expect":"deny","rule":"role-spoof"},
+  {"name":"[claudecode] coordinator Remove-Item Env:CLAUDECODE","tool_name":"PowerShell","tool_input":{"command":"Remove-Item Env:CLAUDECODE"},"role":"coordinator","expect":"deny","rule":"role-spoof"},
+  {"name":"[claudecode] coordinator grep CLAUDECODE is a read","tool_name":"Bash","tool_input":{"command":"grep -rn CLAUDECODE hooks/"},"role":"coordinator","expect":"allow"},
+  {"name":"[claudecode] worker echo $CLAUDECODE is a read","tool_name":"Bash","tool_input":{"command":"echo $CLAUDECODE"},"role":"worker","expect":"allow"},
+  {"name":"[room] coordinator team board stays allowed","tool_name":"Bash","tool_input":{"command":"team board --json"},"role":"coordinator","expect":"allow"},
+  {"name":"[room] coordinator git push origin main stays allowed","tool_name":"Bash","tool_input":{"command":"git push origin main"},"role":"coordinator","expect":"allow"}
 ]
