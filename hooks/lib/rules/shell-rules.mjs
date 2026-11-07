@@ -912,7 +912,9 @@ function teamLaunch(c) {
   let hit;
   if (TEAM_SUBS.has(sub)) hit = sub;
   else if (sub === 'start') hit = startDenied ? 'start' : undefined;
-  else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || (a === 'start' && startDenied));
+  // the control room answers approvals: no worker, subagent or solo agent session starts it
+  else if (sub === 'room') hit = 'room';
+  else if (worker) hit = rest.find((a) => TEAM_SUBS.has(a) || a === 'room' || (a === 'start' && startDenied));
   // a launched worker or subagent whose subcommand is hidden behind a variable or substitution (team $T, team $(echo start))
   const SAFE_SUBS = ['board', 'stage', 'deliver', 'ask', 'reserve'];
   if (!hit && startDenied && !SAFE_SUBS.includes(sub) && rest.some((a) => /[$`]/.test(a))) {
@@ -922,7 +924,9 @@ function teamLaunch(c) {
   if (!worker && hit === 'init') return null;
   return {
     action: worker ? 'deny' : 'ask',
-    reason: hit === 'start'
+    reason: hit === 'room'
+      ? `${name} room answers approvals for the human; only a human terminal may start it ${shown(c)}.`
+      : hit === 'start'
       ? `${name} start opens a coordinator session, which a worker or subagent may not do ${shown(c)}.`
       : hit === 'init'
       ? `${name} init rewrites team configuration; re-run it from a terminal with: team init ${shown(c)}.`

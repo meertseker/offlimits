@@ -856,3 +856,24 @@ test('event records a typed event and validates its flags', async () => {
     assert.equal(readEvents(path.join(f.dir, 'events.jsonl')).at(-1).actor, 'coordinator');
   } finally { f.cleanup(); }
 });
+
+test('room is refused inside Claude in every role and validates --port; help lists it', async () => {
+  const f = fixture();
+  try {
+    for (const role of ['coordinator', 'worker', undefined]) {
+      const env = { CLAUDECODE: '1' };
+      if (role) env.OFFLIMITS_ROLE = role;
+      const r = await f.run(['room'], { env });
+      assert.equal(r.code, 3, `${role}: ${r.err}`);
+      assert.match(r.err, /answers approvals for the human/);
+    }
+    assert.equal((await f.run(['room', '--port', '80'])).code, 2);
+    assert.equal((await f.run(['room', '--port', 'abc'])).code, 2);
+    let got = null;
+    const ok = await f.run(['room', '--port', '4800', '--no-open'], { extra: { runRoom: async (o) => { got = o; return 0; } } });
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal(got.flags.port, 4800);
+    assert.equal(got.flags['no-open'], true);
+    assert.match((await f.run(['help'])).out, /room \[--config/);
+  } finally { f.cleanup(); }
+});

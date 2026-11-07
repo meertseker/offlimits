@@ -12,12 +12,13 @@ import { guard } from './guard.mjs';
 import { gitInit, insideGitRepo, isUnsafeInitDir, runInit } from './init.mjs';
 import { LANE_RE, addLane, assertLane, lanePath, laneStatus, pruneLane, removeLane, resolveBase } from './lanes.mjs';
 import { STAGES, ensureTeamDir, readBoard, reserve, updateLane, withLock, writeBoard } from './state.mjs';
+import { runRoom } from '../room/launch.mjs';
 import { claudeInvocation, hasBin, launchSpec, openTerminal, permissionArgs, sessionCommand, teamCommand } from './terminal.mjs';
 
 const BIN = fileURLToPath(new URL('../../../bin/team.mjs', import.meta.url));
-const VALUE_FLAGS = ['brief', 'model', 'base', 'lane', 'note', 'file', 'language', 'sha', 'verdict', 'defects', 'cost'];
-const BOOL_FLAGS = ['night', 'print', 'resume', 'takeover', 'json', 'abandon', 'yes'];
-const COMMANDS = ['init', 'start', 'coordinator', 'worker', 'board', 'stage', 'deliver', 'ask', 'reserve', 'done', 'event'];
+const VALUE_FLAGS = ['brief', 'model', 'base', 'lane', 'note', 'file', 'language', 'sha', 'verdict', 'defects', 'cost', 'config', 'port'];
+const BOOL_FLAGS = ['night', 'print', 'resume', 'takeover', 'json', 'abandon', 'yes', 'no-open'];
+const COMMANDS = ['init', 'start', 'coordinator', 'worker', 'board', 'stage', 'deliver', 'ask', 'reserve', 'done', 'event', 'room'];
 const ID = /^[A-Za-z0-9][\w.-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // Variables a running Claude Code session puts in its tools' environment; a new worker session must not inherit them.
@@ -40,6 +41,7 @@ const USAGE = `offlimits team <command>
   done <lane> [--abandon]                         remove a merged (or abandoned) lane
   event <type> [--lane x] [--sha s] [--note t] [--model m] [--verdict v] [--defects n] [--cost usd]
                                                   record an event in the team log
+  room [--config f] [--port n] [--no-open]        open the control room, a local page for the human
   help`;
 
 /** A copy of env without the role, lane and Claude-session variables (case-insensitive on Windows). */
@@ -149,6 +151,7 @@ export async function main(argv, deps = {}) {
       return 0;
     }
     if (!COMMANDS.includes(cmd)) throw new Exit(2, `offlimits team: unknown command "${cmd}"\n${USAGE}`);
+    if (cmd === 'room') return cmdRoom(flags);
 
     let initialisedGit = false;
     if (cmd === 'init' && !insideGitRepo(cwd, env)) {
@@ -188,6 +191,20 @@ export async function main(argv, deps = {}) {
       case 'event': return cmdEvent(ctx);
       default: return cmdDone(ctx);
     }
+  }
+
+  /** `team room`: the control room for the human; works outside a repository with a room.json. */
+  async function cmdRoom(flags) {
+    const refused = guard('room', env);
+    if (refused) throw new Exit(3, refused);
+    let port;
+    if (flags.port !== undefined) {
+      if (!/^\d{4,5}$/.test(flags.port) || Number(flags.port) < 1024 || Number(flags.port) > 65535) {
+        throw new Exit(2, 'offlimits team: --port must be a number from 1024 to 65535');
+      }
+      port = Number(flags.port);
+    }
+    return (deps.runRoom ?? runRoom)({ flags: { ...flags, port }, env, cwd, out, err, platform, deps: deps.room });
   }
 
   /** Who an event is from: the session role, `solo` for a roleless Claude session, else `human`. */
