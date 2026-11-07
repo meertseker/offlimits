@@ -1,6 +1,6 @@
 /** Which team CLI commands a caller may run, decided from its environment. */
 
-export const PRIVILEGED = ['coordinator', 'worker', 'done', 'init', 'start'];
+export const PRIVILEGED = ['coordinator', 'worker', 'done', 'init', 'start', 'event'];
 export const LANE_CMDS = ['stage', 'deliver', 'ask'];
 
 // A solo Claude session (no recognised role) has no lane: only these.

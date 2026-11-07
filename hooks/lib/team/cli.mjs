@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { commonRoot, repoRoot } from '../git.mjs';
 import { loadPolicy } from '../policy.mjs';
 import { loadTeam } from './config.mjs';
+import { appendEvent, eventsFile, parseChecks } from './events.mjs';
 import { guard } from './guard.mjs';
 import { gitInit, insideGitRepo, isUnsafeInitDir, runInit } from './init.mjs';
 import { LANE_RE, addLane, assertLane, lanePath, laneStatus, pruneLane, removeLane, resolveBase } from './lanes.mjs';
@@ -14,9 +15,9 @@ import { STAGES, ensureTeamDir, readBoard, reserve, updateLane, withLock, writeB
 import { claudeInvocation, hasBin, launchSpec, openTerminal, permissionArgs, sessionCommand, teamCommand } from './terminal.mjs';
 
 const BIN = fileURLToPath(new URL('../../../bin/team.mjs', import.meta.url));
-const VALUE_FLAGS = ['brief', 'model', 'base', 'lane', 'note', 'file', 'language'];
+const VALUE_FLAGS = ['brief', 'model', 'base', 'lane', 'note', 'file', 'language', 'sha', 'verdict', 'defects', 'cost'];
 const BOOL_FLAGS = ['night', 'print', 'resume', 'takeover', 'json', 'abandon', 'yes'];
-const COMMANDS = ['init', 'start', 'coordinator', 'worker', 'board', 'stage', 'deliver', 'ask', 'reserve', 'done'];
+const COMMANDS = ['init', 'start', 'coordinator', 'worker', 'board', 'stage', 'deliver', 'ask', 'reserve', 'done', 'event'];
 const ID = /^[A-Za-z0-9][\w.-]*$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // Variables a running Claude Code session puts in its tools' environment; a new worker session must not inherit them.
@@ -37,6 +38,8 @@ const USAGE = `offlimits team <command>
   ask "<question>"                                queue a question for the human
   reserve <key>                                   take the next reserved number
   done <lane> [--abandon]                         remove a merged (or abandoned) lane
+  event <type> [--lane x] [--sha s] [--note t] [--model m] [--verdict v] [--defects n] [--cost usd]
+                                                  record an event in the team log
   help`;
 
 /** A copy of env without the role, lane and Claude-session variables (case-insensitive on Windows). */
@@ -182,7 +185,21 @@ export async function main(argv, deps = {}) {
       case 'deliver': return cmdDeliver(ctx);
       case 'ask': return cmdAsk(ctx);
       case 'reserve': return cmdReserve(ctx);
+      case 'event': return cmdEvent(ctx);
       default: return cmdDone(ctx);
+    }
+  }
+
+  /** Who an event is from: the session role, `solo` for a roleless Claude session, else `human`. */
+  function actorFor(role) {
+    if (role === 'coordinator' || role === 'worker') return role;
+    return env.CLAUDECODE ? 'solo' : 'human';
+  }
+
+  /** Append to the team event log; a failed write warns and never fails the command. */
+  function emit(dir, role, fields) {
+    try { appendEvent(eventsFile(dir), { actor: actorFor(role), ...fields }, { now }); } catch (e) {
+      err(`offlimits team: could not write the event log (${e.message})`);
     }
   }
 
@@ -206,7 +223,7 @@ export async function main(argv, deps = {}) {
     return 0;
   }
 
-  function cmdWorker({ flags, pos, mainRoot, team, dir, roleEnv }) {
+  function cmdWorker({ flags, pos, mainRoot, team, dir, roleEnv, role }) {
     const lane = pos[0];
     if (!lane || !LANE_RE.test(lane)) throw new Exit(2, `offlimits team: lane name must match ${LANE_RE}`);
     if (!flags.brief) throw new Exit(2, 'offlimits team: worker needs --brief <file>');
@@ -274,6 +291,7 @@ export async function main(argv, deps = {}) {
       if (extra) err(`offlimits team:${extra}`);
       throw e;
     }
+    emit(dir, role, { type: 'lane.briefed', lane, model, data: { base: made.base } });
     out(`lane ${lane}: ${made.branch} in ${made.worktree} (stage briefed, model ${model})`);
     if (flags.print || team.terminal === 'none' || !spec) {
       out(hint);
@@ -401,6 +419,7 @@ export async function main(argv, deps = {}) {
     const lane = callerLane(ctx);
     ensureTeamDir(ctx.dir);
     updateLane(ctx.dir, lane, ctx.flags.note ? { stage, note: ctx.flags.note } : { stage });
+    emit(ctx.dir, ctx.role, { type: 'lane.stage', lane, data: { stage }, note: ctx.flags.note });
     out(`lane ${lane}: ${stage}`);
     return 0;
   }
@@ -415,6 +434,7 @@ export async function main(argv, deps = {}) {
     ensureTeamDir(ctx.dir);
     fs.writeFileSync(path.join(ctx.dir, 'deliveries', `${lane}.md`), text);
     updateLane(ctx.dir, lane, { stage: 'delivered' });
+    emit(ctx.dir, ctx.role, { type: 'lane.delivered', lane, checks: parseChecks(text) });
     out(`lane ${lane}: delivered`);
     return 0;
   }
@@ -425,6 +445,7 @@ export async function main(argv, deps = {}) {
     const lane = callerLane(ctx);
     ensureTeamDir(ctx.dir);
     fs.appendFileSync(path.join(ctx.dir, 'questions', `${lane}.md`), `- [${stamp()}] ${q}\n`);
+    emit(ctx.dir, ctx.role, { type: 'lane.question', lane, note: q });
     out(`question queued for ${lane}`);
     return 0;
   }
@@ -461,7 +482,9 @@ export async function main(argv, deps = {}) {
     let lane = '';
     try { lane = callerLane(ctx); } catch { /* reserving without a lane is fine */ }
     ensureTeamDir(dir);
-    out(reserve(dir, key, { floor, width, lane }));
+    const value = reserve(dir, key, { floor, width, lane });
+    out(value);
+    emit(dir, ctx.role, { type: 'reserve', lane: lane || undefined, data: { key, value } });
     return 0;
   }
 
@@ -489,7 +512,7 @@ export async function main(argv, deps = {}) {
   }
 
   /** Abandon a lane whose board record never got a branch/worktree: clean up what git knows by the lane's own names. */
-  function abandonPartial(lane, { mainRoot, team, dir }) {
+  function abandonPartial(lane, { mainRoot, team, dir, role }) {
     const rec = { branch: `feat/${lane}`, worktree: lanePath(mainRoot, team, lane) };
     const tip = branchTip(mainRoot, rec.branch);
     if (isWorktree(mainRoot, rec.worktree)) {
@@ -499,13 +522,14 @@ export async function main(argv, deps = {}) {
     }
     pruneLane(mainRoot, rec);
     updateLane(dir, lane, { stage: 'abandoned', note: undefined });
+    emit(dir, role, { type: 'lane.abandoned', lane, sha: tip });
     out(`lane ${lane}: abandoned (record had no branch or worktree; removed what git knew)`);
     const undo = undoLine(rec.branch, tip);
     if (undo) out(undo);
     return 0;
   }
 
-  function cmdDone({ flags, pos, mainRoot, team, dir }) {
+  function cmdDone({ flags, pos, mainRoot, team, dir, role }) {
     const lane = pos[0];
     if (!lane || !LANE_RE.test(lane)) throw new Exit(2, `offlimits team: lane name must match ${LANE_RE}`);
     const rec = readBoard(dir).lanes[lane];
@@ -515,7 +539,7 @@ export async function main(argv, deps = {}) {
     } catch (e) {
       // A launcher killed mid-git leaves {stage: briefed, note: creating} without branch/worktree.
       if (!flags.abandon) throw e;
-      return abandonPartial(lane, { mainRoot, team, dir });
+      return abandonPartial(lane, { mainRoot, team, dir, role });
     }
     const tip = branchTip(mainRoot, rec.branch);
     if (!flags.abandon) {
@@ -533,11 +557,32 @@ export async function main(argv, deps = {}) {
     }
     const stage = flags.abandon ? 'abandoned' : 'merged';
     updateLane(dir, lane, { stage });
+    emit(dir, role, { type: `lane.${stage}`, lane, sha: tip });
     out(`lane ${lane}: ${stage}, worktree and branch removed`);
     if (flags.abandon) {
       const undo = undoLine(rec.branch, tip);
       if (undo) out(`branch ${rec.branch} was at ${tip}; ${undo}`);
     }
+    return 0;
+  }
+
+  /** `team event <type>`: record a deploy, a review verdict or a note in the team log (coordinator and human only, see guard). */
+  function cmdEvent({ flags, pos, dir, role }) {
+    const type = pos[0];
+    if (!type) throw new Exit(2, 'offlimits team: event needs a type, for example: team event deploy --sha <sha>');
+    const fields = { actor: actorFor(role), type, lane: flags.lane, sha: flags.sha, note: flags.note, model: flags.model, verdict: flags.verdict };
+    if (flags.defects !== undefined) {
+      if (!/^\d{1,5}$/.test(flags.defects)) throw new Exit(2, 'offlimits team: --defects must be a whole number');
+      fields.defects = Number(flags.defects);
+    }
+    if (flags.cost !== undefined) {
+      if (!/^\d{1,9}(\.\d{1,6})?$/.test(flags.cost)) throw new Exit(2, 'offlimits team: --cost must be a number of US dollars, for example 0.42');
+      fields.costUsd = Number(flags.cost);
+    }
+    try { appendEvent(eventsFile(dir), fields, { now }); } catch (e) {
+      throw new Exit(2, `offlimits team: ${e.message}`);
+    }
+    out(`event ${type} recorded`);
     return 0;
   }
 }

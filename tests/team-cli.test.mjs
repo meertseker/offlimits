@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { main } from '../hooks/lib/team/cli.mjs';
+import { readEvents } from '../hooks/lib/team/events.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
@@ -799,4 +800,59 @@ test('terminal env scrub is case-insensitive on win32 and exact elsewhere', asyn
   assert.deepEqual(scrubEnv(env, 'MY_ROLE', 'win32'), { Path: 'p', KEEP: '1' });
   assert.deepEqual(scrubEnv(env, 'MY_ROLE', 'linux'), { Path: 'p', ClaudeCode: '1', claude_code_entrypoint: 'cli', Offlimits_Role: 'worker', my_role: 'x', KEEP: '1' });
   assert.deepEqual(scrubEnv({ CLAUDECODE: '1', MY_ROLE: 'c', K: '1' }, 'MY_ROLE', 'linux'), { K: '1' });
+});
+
+test('worker, stage, deliver, ask, reserve and done write events', async () => {
+  const f = fixture();
+  try {
+    f.setTeam({ reservations: { migration: { scan: 'mig', pattern: '^(\d+)_' } } });
+    fs.mkdirSync(path.join(f.root, 'mig'));
+    assert.equal((await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print'])).code, 0);
+    assert.equal((await f.run(['stage', 'designing', '--lane', 'demo', '--note', 'n1'])).code, 0);
+    fs.writeFileSync(path.join(f.tmp, 'd.md'), 'checks: tests ✓ selftest ✗\n');
+    assert.equal((await f.run(['deliver', '--file', path.join(f.tmp, 'd.md'), '--lane', 'demo'])).code, 0);
+    assert.equal((await f.run(['ask', 'why', 'not?', '--lane', 'demo'])).code, 0);
+    const r = await f.run(['reserve', 'migration', '--lane', 'demo']);
+    assert.equal(r.code, 0, r.err);
+    const wt = path.join(f.tmp, 'repo-demo');
+    fs.writeFileSync(path.join(wt, 'new.txt'), 'n');
+    git(wt, 'add', '.');
+    git(wt, 'commit', '-m', 'work');
+    git(f.root, 'merge', '--no-edit', 'feat/demo');
+    const d = await f.run(['done', 'demo']);
+    assert.equal(d.code, 0, d.err);
+    const ev = readEvents(path.join(f.dir, 'events.jsonl'));
+    assert.deepEqual(ev.map((e) => e.type), ['lane.briefed', 'lane.stage', 'lane.delivered', 'lane.question', 'reserve', 'lane.merged']);
+    assert.equal(ev[0].lane, 'demo');
+    assert.equal(ev[0].model, 'sonnet');
+    assert.deepEqual(ev[1].data, { stage: 'designing' });
+    assert.equal(ev[1].note, 'n1');
+    assert.deepEqual(ev[2].checks, [{ name: 'tests', ok: true }, { name: 'selftest', ok: false }]);
+    assert.equal(ev[3].note, 'why not?');
+    assert.deepEqual(ev[4].data, { key: 'migration', value: '0001' });
+    assert.match(ev[5].sha, /^[0-9a-f]{40}$/);
+    assert.ok(ev.every((e) => e.actor === 'human'), JSON.stringify(ev.map((e) => e.actor)));
+  } finally { f.cleanup(); }
+});
+
+test('event records a typed event and validates its flags', async () => {
+  const f = fixture();
+  try {
+    const ok = await f.run(['event', 'deploy', '--sha', 'abc1234', '--note', 'n']);
+    assert.equal(ok.code, 0, ok.err);
+    assert.match(ok.out, /event deploy recorded/);
+    const rv = await f.run(['event', 'review', '--lane', 'demo', '--verdict', 'fail', '--defects', '2', '--model', 'opus', '--cost', '0.42']);
+    assert.equal(rv.code, 0, rv.err);
+    const ev = readEvents(path.join(f.dir, 'events.jsonl'));
+    assert.deepEqual(ev.map((e) => [e.type, e.actor]), [['deploy', 'human'], ['review', 'human']]);
+    assert.equal(ev[0].sha, 'abc1234');
+    assert.deepEqual([ev[1].lane, ev[1].verdict, ev[1].defects, ev[1].model, ev[1].costUsd], ['demo', 'fail', 2, 'opus', 0.42]);
+    assert.equal((await f.run(['event', 'review', '--defects', 'x'])).code, 2);
+    assert.equal((await f.run(['event', 'Bad.Type'])).code, 2);
+    assert.equal((await f.run(['event'])).code, 2);
+    assert.equal((await f.run(['event', 'deploy'], { env: { CLAUDECODE: '1', OFFLIMITS_ROLE: 'worker' } })).code, 3);
+    const c = await f.run(['event', 'deploy'], { env: { CLAUDECODE: '1', OFFLIMITS_ROLE: 'coordinator' } });
+    assert.equal(c.code, 0, c.err);
+    assert.equal(readEvents(path.join(f.dir, 'events.jsonl')).at(-1).actor, 'coordinator');
+  } finally { f.cleanup(); }
 });
