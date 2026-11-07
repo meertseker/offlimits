@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Added:
+
+- `team room`: the control room, a local page on 127.0.0.1 over every configured project: lanes (worktrees) with their stage, divergence, activity, delivery note and ledger status; the Claude Code sessions that are working or waiting for you; unanswered approval requests; night loops; inbox folders and log watches; ledger sections; the day's timeline; and metrics. It answers an approval request with one appended line and pauses or resumes a loop, each after a confirmation, and writes nothing else. Configuration in `~/.offlimits/room.json`; without it, the current repository. See `docs/room.md`.
+- The control room also reads hand-built setups (Markdown ledgers, approval folders, loop folders), so a project can use it before it moves to team mode. The page is in English or Turkish.
+- Event log: the team commands append one JSON line per state change to `.offlimits/team/events.jsonl` (`lane.briefed`, `lane.stage`, `lane.delivered` with the delivery note's checks, `lane.question`, `reserve`, `lane.merged`, `lane.abandoned`). `team event <type>` records deploys, review verdicts and notes, for the coordinator and human terminals. The schema carries model, tokens, cost, checks, verdict and intervention fields for metrics.
+- `team-launch` also denies `team room` to workers and subagents and asks in solo mode. The CLI refuses `room` inside Claude Code in every role, because the room answers approvals for the human.
+
+Security:
+
+- The room binds to 127.0.0.1, answers 421 to a foreign Host header, signs in with a single-use ten-minute link that sets an HttpOnly SameSite=Strict cookie, accepts writes only as JSON POST requests with its own Origin and an `X-Offlimits-Room` header, and serves a strict Content-Security-Policy. It makes no outbound connections.
+
 ## 0.3.1 - 2026-10-30
 
 Added:

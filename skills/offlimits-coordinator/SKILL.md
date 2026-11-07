@@ -78,6 +78,10 @@ Only on the human's explicit go for that lane. Examples: "merge", "deploy", "al 
 
 One lane at a time. If a step needs something only the human can do (a secret, a dashboard click), say exactly what and wait.
 
+## Event log
+
+The lane commands record their own events in `.offlimits/team/events.jsonl`. Record the rest yourself, right after it happens: `team event deploy --sha <sha>` after a deploy, `team event review --lane <lane> --verdict pass|fail --defects <n>` after a review. The human watches the team in `team room`; never start it yourself (the CLI and the gate refuse it).
+
 ## Night mode
 
 When the human says they are leaving, going to sleep, or "work overnight":

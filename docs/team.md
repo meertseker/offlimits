@@ -60,6 +60,8 @@ Run as `team <command>` (or `node <plugin>/bin/team.mjs <command>`). Exit codes:
 | `ask "<question>"` | Appends a question to `questions/<lane>.md` for the human. |
 | `reserve <key>` | Prints the next number for a reservation from `team.reservations` (see below). |
 | `done <lane> [--abandon]` | Removes the worktree and local branch and marks the lane `merged`. Refuses a lane with uncommitted changes, a lane with no commits since it was created, and a lane not merged into the base. `--abandon` drops any of these and marks it `abandoned`. |
+| `event <type> [--lane x] [--sha s] [--note t] [--model m] [--verdict v] [--defects n] [--cost usd]` | Appends one event to `events.jsonl`: deploys, review verdicts, notes. The lane commands write their own events. See [room.md](room.md#event-log). |
+| `room [--config f] [--port n] [--no-open]` | Opens the control room, a local page over every lane, session, loop and approval request (see [room.md](room.md)). Human terminals only. |
 | `help` | Prints usage. |
 
 `done` decides "merged" from git ancestry, so merge lanes with a merge commit or a fast-forward, never a squash. A squash-merged lane looks unmerged; close it with `--abandon` after checking it landed.
@@ -76,6 +78,8 @@ Inside Claude Code the launcher reads `CLAUDECODE` and the session's role. A sub
 | `board`, `reserve` | yes | yes | yes | yes |
 | `ask` | yes | yes | yes (own lane) | no (needs a lane) |
 | `stage`, `deliver` | yes | yes | yes (own lane) | no (needs a lane) |
+| `event` | yes | yes | no | no |
+| `room` | yes | no (the CLI refuses it inside Claude Code) | no | no |
 
 `start` is the one launch command your own session may run: after `init`, `defaultRole: worker` makes your plain `claude` session a worker, and the gate lets a worker that got its role only from `defaultRole` run `start` (an explicit `OFFLIMITS_ROLE=worker` and every subagent are denied). `/offlimits init` there is denied the second time with "init rewrites team configuration; re-run it from a terminal with: team init". Do exactly that.
 
@@ -140,6 +144,7 @@ Team state lives in the main checkout, in `.offlimits/team/` (gitignored by `ini
   drafts/<lane>.md      briefs the coordinator is still writing
   deliveries/<lane>.md  what each worker handed over
   questions/<lane>.md   questions queued for you
+  events.jsonl          one line per state change and team event (see room.md)
 ```
 
 State is written under a file lock: a timestamped token, a breaker lock for stale locks and a token-checked release. Workers in other worktrees reach the same folder because the launcher resolves the main checkout.

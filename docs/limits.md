@@ -52,6 +52,16 @@ For a boundary that holds against a determined agent, give it credentials that c
 - **Repository and brief paths are allowlisted.** The worker's terminal command can only carry letters, digits, space and these characters: `.` `,` `:` `\` `/` `_` `(` `)` `-`. Any other character in the repository or brief path is refused, including `~ + & ' @ # [ ] = %` and `"`, and `team worker` stops with an error until the repository lives at a path without them.
 - **Squash merges.** `team done` checks git ancestry, so a squash-merged lane looks unmerged and needs `--abandon`.
 
+## Control room
+
+- **Any process running as you can answer an approval.** The room trusts the local machine: a process that can reach 127.0.0.1 and read the room's terminal output, or write the approvals folder directly, can answer a request with or without the room. The room adds no new way in and does not close this one. Keep approvals in a folder your agents do not write, or have the coordinator confirm answers it relies on.
+- **No usage percentage.** Claude Code keeps no local file with the plan's usage, so the room cannot pause loops at a usage threshold. It shows the newest usage-limit notice it finds in the last day's transcripts instead.
+- **No health checks.** The room makes no outbound connections, so it does not fetch health URLs; deploys show up through the event log and git.
+- **Ledger status is matched by text.** A lane gets a ledger row when a table cell names its branch as a whole word. A row that names the branch differently shows nothing, and when several rows name it the first one wins.
+- **Session state is read from transcript tails.** A session counts as waiting when its last turn ended, and as working when its last entry is a tool call or result. A session whose terminal was closed still looks waiting for up to 12 hours.
+- **Polling, not push.** The page refreshes every 20 seconds and when it gets focus; the room caches a snapshot for 10 seconds, and drops it after each write.
+- **Loops are not started.** Resume writes the run value and removes the stop marker; it does not start the loop process. The page shows the configured start hint when the log is not fresh.
+
 ## Platform notes
 
 - The hook needs Node 20 or newer on the PATH of the machine running Claude Code.

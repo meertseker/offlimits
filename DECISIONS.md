@@ -2,6 +2,8 @@
 
 ## Pending
 
+- [ ] Merge #2 (0.3.1), then the control room PR (`feat/room`, stacked on #2), and release 0.4.0 (Mert's go).
+
 Published 2026-10-25: https://github.com/meertseker/offlimits, release v0.1.0, CI green on Windows, macOS and Linux (Node 20 and 22), `main` ruleset active. Verified end to end: installed from GitHub with `claude plugin install offlimits --marketplace meertseker/offlimits`, a real `--dangerously-skip-permissions` session with `OFFLIMITS_ROLE=worker` was blocked on `git push origin main`.
 
 - [ ] Tag and release v0.3.0 (Mert's go).
@@ -14,6 +16,10 @@ Published 2026-10-25: https://github.com/meertseker/offlimits, release v0.1.0, C
 
 ## Decided
 
+- 2026-11-07: The control room lives in offlimits as `team room`, the extension of `team board`. A product that needs an internal console takes offlimits as a dependency instead of building its own.
+- 2026-11-07: Team history goes to an append-only event log, `.offlimits/team/events.jsonl` (the room's own writes in `~/.offlimits/events.jsonl`); boards, ledgers, reports and metrics are projections of it. The schema carries metric fields from day one.
+- 2026-11-07: The room writes exactly two things, an approval answer line and a loop pause or resume. It never plans, merges, deploys, numbers migrations or writes ledgers, and it is refused inside Claude Code in every role.
+- 2026-11-07: The room reads hand-built setups (ledger files, approval folders, loop folders), so projects can use it before they move to team mode.
 - 2026-10-25: Name is `offlimits` (English). The Turkish working name was bekci.
 - 2026-10-25: Published under the personal GitHub account `meertseker`.
 - 2026-10-25: License is MIT.

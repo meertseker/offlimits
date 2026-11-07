@@ -25,6 +25,10 @@ Koordinatörle bir teknik lider gibi konuşursunuz. İşi böler, her parça iç
 
 Komutlar, `team` ayarları ve sınırlar: [docs/team.md](docs/team.md).
 
+## Kumanda
+
+`team room` komutunu kendi terminalinizde çalıştırın: 127.0.0.1 üzerinde açılan yerel bir sayfa bütün projelerinizin işlerini, döngülerini, açık Claude Code oturumlarını ve onay isteklerini gösterir, hangisinin sizi beklediğini söyler. Onay isteğine cevap satırı yazar, gece döngüsünü durdurur ya da devam ettirir; başka hiçbir şey yazmaz, dışarıya bağlanmaz. Ayrıntı: [docs/room.md](docs/room.md).
+
 ## Kapı: ne yapar
 
 offlimits'in kapısı tek bir PreToolUse hook'udur. Ajanın çalıştırmak üzere olduğu her kabuk komutunu, dosya yazımını ve MCP çağrısını okur; production'a dokunanları reddeder: `main` dalına push, canlı veritabanı değişiklikleri, deploy, paket yayınlama, MCP üzerinden yazma SQL'i, hook ve politika dosyalarının değiştirilmesi. Bağımlılık, ağ çağrısı, hesap ve telemetri yoktur.

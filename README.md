@@ -29,6 +29,10 @@ You run `/offlimits start` (or `team coordinator`) in the main checkout and talk
 
 **Unattended workers.** Workers that run while you are away (night mode) need `team.permissionMode` set to `acceptEdits` or `bypassPermissions`: in the default mode a fresh worker session stops at its first permission prompt and waits for someone to answer it. The gate is what keeps that safe, because it runs in every permission mode and still denies a worker anything that touches production.
 
+### Control room
+
+`team room`, which you run yourself in a terminal, opens a local page on 127.0.0.1 over all your projects: every lane with its stage, divergence and activity, the Claude Code sessions that are working or waiting for you, unanswered approval requests, night loops, inboxes, logs, ledger sections, the day's timeline and a few metrics. It answers an approval request with one appended line and pauses or resumes a night loop, after a confirmation, and writes nothing else. It makes no outbound connections. It also reads hand-built setups (Markdown ledgers, approval folders, loop folders), so a project can use it before it moves to team mode. The team commands now append every state change to an event log, `.offlimits/team/events.jsonl`, which the room turns into a timeline and metrics. Configuration, security model and limits: [docs/room.md](docs/room.md).
+
 Commands, config keys, night mode, state layout and limits: [docs/team.md](docs/team.md).
 
 ## Install
@@ -80,7 +84,7 @@ Shell rules apply to `Bash` and `PowerShell` calls. Commands are split on `;`, `
 | `role-spoof` | any command that assigns `OFFLIMITS_ROLE`, so an agent cannot promote itself |
 | `protected-file` | writes to `.claude/settings.json`, `.claude/hooks/**`, `offlimits.json` and `.github/workflows/**`, by file tools or by `>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `Set-Content` and similar |
 | `agent-spawn` | a worker starting another agent CLI (`claude`, `codex`, `aider`, `gemini`), which would run without the worker marker; solo asks |
-| `team-launch` | `team worker`, `done`, `coordinator`, `init` or `start` from a worker or subagent (the CLI starts or removes team sessions, which only the coordinator does); solo asks, except `init` and `start`. Your own session is allowed to `start` even when `defaultRole` makes it a worker; launched workers and subagents are not |
+| `team-launch` | `team worker`, `done`, `coordinator`, `init`, `start` or `room` from a worker or subagent (the CLI starts or removes team sessions, which only the coordinator does); solo asks, except `init` and `start`. Your own session is allowed to `start` even when `defaultRole` makes it a worker; launched workers and subagents are not |
 | `git-clean` | `git clean -x` or `-X`, which also deletes ignored files such as `.env` and local databases; solo asks, `-n` passes |
 | `opaque-shell` | a shell that reads its commands from stdin, `eval` of generated text, nesting deeper than 8 levels, and commands too large to inspect in time (over 64 KB, 1000 segments or 200 variables); solo asks |
 | `extra-deny` | your own regexes from `offlimits.json` |
@@ -185,7 +189,7 @@ Five public cases, from the Replit database deletion in 2025 to an agent with un
 
 **Does it run on Windows?** Yes. It is Node only, handles the `PowerShell` tool as well as `Bash`, and is tested on Windows, macOS and Linux.
 
-**Does it send telemetry?** No. It makes no network calls. The only thing it writes is `.offlimits/log.jsonl` in your repository, capped at 200 lines. Add `.offlimits/` to your `.gitignore`.
+**Does it send telemetry?** No. It makes no network calls. The gate writes only `.offlimits/log.jsonl` in your repository, capped at 200 lines. Team mode keeps its state and event log in `.offlimits/team/`, and the control room keeps its config, pid file and event log in `~/.offlimits/`. Add `.offlimits/` to your `.gitignore`.
 
 ## Contributing, security, license
 
