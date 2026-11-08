@@ -1,7 +1,7 @@
 {
   "name": "offlimits",
   "displayName": "Off Limits",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Turn Claude Code into a software team: one coordinator you talk to, workers in their own worktrees, and a gate that keeps everyone but the coordinator out of production, in every permission mode.",
   "author": {
     "name": "Mert Seker"

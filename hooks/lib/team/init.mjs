@@ -1,11 +1,40 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { loadTeam } from './config.mjs';
 import { teamDir, ensureTeamDir } from './state.mjs';
 
 const START = '<!-- offlimits:team:start -->';
 const END = '<!-- offlimits:team:end -->';
 const TEMPLATES = new URL('../../../templates/', import.meta.url);
+
+/**
+ * Is `dir` inside a git repository? Looks only at the filesystem (a `.git` folder or file in dir or a parent, or GIT_DIR),
+ * so a failing git call can never make an existing repository look missing.
+ */
+export function insideGitRepo(dir, env = process.env) {
+  if (env.GIT_DIR) return true;
+  let d = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(d, '.git'))) return true;
+    const up = path.dirname(d);
+    if (up === d) return false;
+    d = up;
+  }
+}
+
+/** The home directory or a drive/filesystem root: never somewhere to auto-`git init`. */
+export function isUnsafeInitDir(dir, home = os.homedir(), platform = process.platform) {
+  const d = path.resolve(dir);
+  const norm = (p) => (platform === 'win32' ? p.toLowerCase() : p);
+  return d === path.parse(d).root || norm(d) === norm(path.resolve(home));
+}
+
+/** Run `git init` in `dir` (argument array). Caller has already checked that no repository contains it. */
+export function gitInit(dir) {
+  execFileSync('git', ['init', '-q'], { cwd: dir, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+}
 
 /** Render `templates/<name>`, replacing `{{key}}`. Unknown keys stay as written. */
 export function renderTemplate(name, vars = {}) {
@@ -14,6 +43,9 @@ export function renderTemplate(name, vars = {}) {
 }
 
 const bullets = (items, none, wrap = (s) => s) => (items.length ? items.map((s) => `- ${wrap(s)}`).join('\n') : none);
+
+// Mert's choice: unattended team windows stall on permission prompts; the gate is what keeps bypass safe.
+const newTeam = (language) => ({ language: language || 'en', permissionMode: 'bypassPermissions' });
 
 function readIfExists(file) {
   try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
@@ -36,7 +68,7 @@ export function runInit(root, { language } = {}) {
   // offlimits.json
   const cfgText = readIfExists(path.join(root, 'offlimits.json'));
   if (cfgText === null) {
-    write('offlimits.json', JSON.stringify({ defaultRole: 'worker', team: { language: language || 'en' } }, null, 2) + '\n');
+    write('offlimits.json', JSON.stringify({ defaultRole: 'worker', team: newTeam(language) }, null, 2) + '\n');
   } else {
     let data = null;
     try { data = JSON.parse(cfgText.replace(/^\uFEFF/, '')); } catch { /* reported below */ }
@@ -45,7 +77,7 @@ export function runInit(root, { language } = {}) {
     } else {
       let dirty = false;
       if (!('defaultRole' in data)) { data.defaultRole = 'worker'; dirty = true; }
-      if (!('team' in data)) { data.team = { language: language || 'en' }; dirty = true; }
+      if (!('team' in data)) { data.team = newTeam(language); dirty = true; }
       if (dirty) write('offlimits.json', JSON.stringify(data, null, 2) + '\n');
     }
   }

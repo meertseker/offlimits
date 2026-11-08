@@ -106,3 +106,44 @@ test('budget: branch lookups are memoised per directory and capped', () => {
   assert.equal(d.action, 'deny');
   assert.ok(calls <= 16, `${calls} lookups`);
 });
+
+// PowerShell script blocks: crafted nesting must not multiply the work, deep nesting must not throw.
+const psRun = (command, role = 'worker') => {
+  const t = performance.now();
+  const d = decide({ tool_name: 'PowerShell', tool_input: { command } }, ctx(role));
+  return { d, ms: performance.now() - t };
+};
+const BS = String.fromCharCode(92); // a backslash
+const psNest = (n, body) => '& { '.repeat(n) + body + ' }'.repeat(n);
+const fill = (unit, len) => unit.repeat(Math.floor(len / unit.length));
+
+test('budget: 60 KB of nested PowerShell blocks with backslashes decides within 2 s', () => {
+  for (const command of [
+    psNest(7, fill(`&{a${BS}}`, 60000)),
+    psNest(7, fill(`& { a${BS}b } `, 60000)),
+    psNest(7, `Write-Host ${fill(`a${BS}b `, 60000)}`),
+    fill(`& { & { & { & { & { & { & { a${BS}b } } } } } } } `, 60000),
+  ]) {
+    for (const role of ['worker', 'solo']) {
+      const { d, ms } = psRun(command, role);
+      assert.ok(ms < 2000, `took ${ms.toFixed(0)} ms`);
+      assert.ok(d.action === 'allow' || d.rule === 'opaque-shell', JSON.stringify(d));
+    }
+  }
+  const push = psRun(`${psNest(7, fill(`&{a${BS}}`, 60000))}; git push origin main`);
+  assert.ok(push.ms < 2000, `took ${push.ms.toFixed(0)} ms`);
+  assert.equal(push.d.action, 'deny');
+});
+
+test('budget: deeply nested "$( in PowerShell is opaque, never a throw', () => {
+  for (const unit of ['"$(', '"$( ', '$("$(']) {
+    const command = `${fill(unit, 36000)}; git push origin main`;
+    const w = psRun(command, 'worker');
+    assert.ok(w.ms < 2000, `took ${w.ms.toFixed(0)} ms`);
+    assert.equal(w.d.action, 'deny');
+    assert.equal(w.d.rule, 'opaque-shell');
+    const s = psRun(command, 'solo');
+    assert.equal(s.d.action, 'ask');
+    assert.equal(s.d.rule, 'opaque-shell');
+  }
+});

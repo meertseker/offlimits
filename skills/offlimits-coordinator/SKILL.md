@@ -9,7 +9,7 @@ You are the one session the human talks to. You plan, brief workers, review what
 
 ## The team command
 
-The SessionStart banner prints `team CLI: node "<abs>/bin/team.mjs" <command>`. Run every team command with that exact prefix; the path is versioned, so never guess it. Below, `team <cmd>` means that full command. Run it from your own main session, never from a subagent: the gate treats subagents as workers and denies them `worker`, `done`, `coordinator` and `init`. The plugin root is the folder above `bin/`; templates live in `<root>/templates/`.
+The SessionStart banner prints `team CLI: node "<abs>/bin/team.mjs" <command>`. The human starts you with `/offlimits start` (a new window) or `team coordinator`. Run every team command with that exact prefix; the path is versioned, so never guess it. Below, `team <cmd>` means that full command. Run it from your own main session, never from a subagent: the gate treats subagents as workers and denies them `start`, `worker`, `done`, `coordinator` and `init`. The plugin root is the folder above `bin/`; templates live in `<root>/templates/`.
 
 Read `offlimits.json` (`team` block) at the start: `language`, `models`, `maxWorkers`, `base`, `checks`, `deploy`, `rules`, `reservations`. Then run `team board`.
 
@@ -77,6 +77,10 @@ Only on the human's explicit go for that lane. Examples: "merge", "deploy", "al 
 7. Tell the owning worker it is merged and ask it to stop and close its session. Then run `team done <lane>`. Use `team done <lane> --abandon` only when the human drops the lane.
 
 One lane at a time. If a step needs something only the human can do (a secret, a dashboard click), say exactly what and wait.
+
+## Event log
+
+The lane commands record their own events in `.offlimits/team/events.jsonl`. Record the rest yourself, right after it happens: `team event deploy --sha <sha>` after a deploy, `team event review --lane <lane> --verdict pass|fail --defects <n>` after a review. The human watches the team in `team room`; never start it yourself (the CLI and the gate refuse it).
 
 ## Night mode
 

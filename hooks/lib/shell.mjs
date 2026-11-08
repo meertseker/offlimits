@@ -5,6 +5,8 @@ export const OPAQUE_PREFIX = 'offlimits:opaque';
 const OPAQUE_STDIN = `${OPAQUE_PREFIX} shell reads stdin`;
 export const OPAQUE_DEEP = `${OPAQUE_PREFIX} nesting too deep`;
 export const OPAQUE_EVAL = `${OPAQUE_PREFIX} eval of command output`;
+export const OPAQUE_BRACES = `${OPAQUE_PREFIX} unbalanced script block`;
+export const OPAQUE_HASH = `${OPAQUE_PREFIX} unreadable hash table`;
 const MAX_ROUNDS = 8;
 
 /**
@@ -43,6 +45,30 @@ const SHELL_LIKE = new Set([...POSIX_SHELLS, ...PS_SHELLS, 'cmd', 'eval']);
 const ASSIGN = /^[A-Za-z_]\w*=/;
 const EVAL_SAFE = new Set(['ssh-agent', 'brew', 'direnv', 'pyenv', 'rbenv', 'nodenv', 'fnm', 'zoxide', 'starship', 'mise', 'rtx', 'conda', 'keychain', 'dircolors', 'opam', 'luarocks', 'pdm', 'register-python-argcomplete']);
 
+const START_LIKE = /^\s*(?:&\s*)?(?:start-process|saps|start)\s/i;
+
+// PowerShell lead-ins that still run the command after them: assignments ($p =, $x +=, $script:p =, [type]$p =, ${p} =,
+// $a, $b =, $h['k'] =, $p ??=), [type] casts before a parenthesised body, dot-sourcing (. cmd) and the call operator (& cmd).
+// $env:NAME = is left to stripAssignments, which records the variable.
+const PS_TYPE = String.raw`\[(?:[^\[\]]|\[[^\[\]]*\])*\]`;
+const PS_VAR = String.raw`(?:\$\{[^}]*\}|\$(?!env:)[A-Za-z_]\w*(?::[A-Za-z_]\w*)?)(?:\.\w+|\[[^\]]*\])*`;
+const PS_LEAD = new RegExp(
+  String.raw`^\s*(?:(?:${PS_TYPE}\s*)*${PS_VAR}(?:\s*,\s*${PS_VAR})*\s*(?:[-+*/%]|\?\?)?=(?!=)|(?:${PS_TYPE}\s*)+(?=\()|\.(?=\s+\S)|&)\s*`,
+  'i',
+);
+
+/** Drop PowerShell lead-ins (see PS_LEAD) from the start of a segment; the command after them is what runs. */
+export function psLead(seg) {
+  const s = dropPsLead(seg);
+  return s.trim() ? s.trim() : String(seg).trim();
+}
+
+/** psLead without trimming (scan() needs the space after Start-Process). */
+function dropPsLead(seg) {
+  let s = String(seg);
+  for (let m; (m = PS_LEAD.exec(s)) && m[0].length; ) s = s.slice(m[0].length);
+  return s;
+}
 const OPEN = Symbol('open');
 const CLOSE = Symbol('close');
 
@@ -51,20 +77,30 @@ const CLOSE = Symbol('close');
  * character (Windows paths such as "C:\repo\" must not swallow the closing quote).
  * With marks, grouping parentheses are reported as OPEN / CLOSE items.
  */
-function scan(s, literalBackslash, marks = false) {
+function scan(s, literalBackslash, marks = false, ps = false, here = true) {
   const out = [];
   let cur = '';
   let q = null; // active quote char
   let depth = 0; // $( ... ) nesting
   let bt = false; // inside backticks
+  let at = 0; // index of the character being read; items record where they end in out.pos
+  let noCommentEnd = false; // no #> after this point: a later <# need not look again
+  let noBraceEnd = false; // no } after this point: a later ${ need not look again
+  const noHereEnd = new Set(); // quote classes whose here-string has no end after this point
+  const pos = [];
+  out.pos = pos;
   const flush = () => {
-    if (cur.trim()) out.push(cur.trim());
+    if (cur.trim()) {
+      out.push(cur.trim());
+      pos.push(at);
+    }
     cur = '';
   };
   for (let i = 0; i < s.length; i++) {
+    at = i;
     const c = s[i];
     if (q === "'") {
-      if (c === "'") q = null;
+      if (c === "'" || (ps && PS_SQ.includes(c))) q = null;
       cur += c;
       continue;
     }
@@ -74,7 +110,7 @@ function scan(s, literalBackslash, marks = false) {
         i++;
         continue;
       }
-      if (c === '"') q = null;
+      if (c === '"' || (ps && PS_DQ.includes(c))) q = null;
       cur += c;
       continue;
     }
@@ -83,9 +119,48 @@ function scan(s, literalBackslash, marks = false) {
       i++;
       continue;
     }
-    if (c === "'" || c === '"') {
-      q = c;
+    if (ps) {
+      // PowerShell: <# ... #> is a comment, @"<newline> ... <newline>"@ a here-string (both read whole)
+      // ${name} is a variable whatever its name holds (${a<#}); `<# is an escaped <, not a comment
+      if (c === '$' && s[i + 1] === '{' && !noBraceEnd) {
+        let j = i + 2;
+        while (j < s.length && s[j] !== '}') j += s[j] === '`' ? 2 : 1;
+        noBraceEnd = j >= s.length;
+        if (!noBraceEnd) {
+          cur += s.slice(i, j + 1);
+          i = j;
+          continue;
+        }
+      }
+      if (c === '<' && s[i + 1] === '#' && s[i - 1] !== '`' && !noCommentEnd) {
+        const e = s.indexOf('#>', i + 2);
+        noCommentEnd = e === -1;
+        if (e !== -1) {
+          cur += ' ';
+          i = e + 1;
+          continue;
+        }
+      }
+      const hc = here && c === '@' && (s[i + 2] === '\n' || s[i + 2] === '\r') ? psQuoteClass(s[i + 1]) : null;
+      if (hc && !noHereEnd.has(hc)) {
+        const e = psSkipQuote(s, i + 1);
+        if (e < 0) noHereEnd.add(hc);
+        if (e > 0) {
+          cur += s.slice(i, e);
+          i = e - 1;
+          continue;
+        }
+      }
+    }
+    if (c === "'" || c === '"' || (ps && psQuoteClass(c))) {
+      q = ps && PS_SQ.includes(c) ? "'" : ps && PS_DQ.includes(c) ? '"' : c;
       cur += c;
+      continue;
+    }
+    if (c === '`' && ps) {
+      // PowerShell: a backtick escapes the next character (`; is no separator, `<# no comment)
+      cur += c + (s[i + 1] ?? '');
+      i++;
       continue;
     }
     if (c === '`') {
@@ -93,9 +168,16 @@ function scan(s, literalBackslash, marks = false) {
       cur += c;
       continue;
     }
-    if (c === '$' && s[i + 1] === '(') {
+    if (c === '(' && START_LIKE.test(ps ? dropPsLead(cur) : cur)) {
+      // Start-Process git ('push', 'origin'): an argument list, not a grouping
       depth++;
-      cur += '$(';
+      cur += c;
+      continue;
+    }
+    if ((c === '$' || c === '@') && s[i + 1] === '(') {
+      // $( ... ) and PowerShell's @( ... ) stay in one segment; substitutions() hands the inside on
+      depth++;
+      cur += c + '(';
       i++;
       continue;
     }
@@ -113,7 +195,10 @@ function scan(s, literalBackslash, marks = false) {
       flush();
     } else if (c === '(' || c === ')') {
       flush(); // includes grouping parens and <( >( process substitution
-      if (marks) out.push(c === '(' ? OPEN : CLOSE);
+      if (marks) {
+        out.push(c === '(' ? OPEN : CLOSE);
+        pos.push(i);
+      }
     } else if (c === '|') {
       if (s[i + 1] === '|') i++;
       flush();
@@ -130,9 +215,211 @@ function scan(s, literalBackslash, marks = false) {
       cur += c;
     }
   }
+  at = s.length;
   flush();
   return out;
 }
+
+// PowerShell treats the curly quotes as quotes too: ‘ ’ ‚ ‛ like ' and “ ” „ like ".
+const PS_SQ = "'‘’‚‛";
+const PS_DQ = '"“”„';
+const psQuoteClass = (c) => (c === undefined ? null : PS_SQ.includes(c) ? PS_SQ : PS_DQ.includes(c) ? PS_DQ : null);
+// Deepest "$( ... ) nesting the PowerShell lexer follows; deeper text is opaque (and the recursion stays far from the stack limit).
+const PS_MAX_NEST = 100;
+const TOO_DEEP = -2;
+
+/**
+ * Skip a PowerShell quoted string starting at s[i] (a quote of either class, or a here-string after @); returns the
+ * index after it, -1 when unclosed, TOO_DEEP past PS_MAX_NEST nested subexpressions.
+ */
+function psSkipQuote(s, i, lvl = 0, here = true) {
+  const n = s.length;
+  const cls = psQuoteClass(s[i]);
+  if (here && s[i - 1] === '@' && (s[i + 1] === '\n' || s[i + 1] === '\r')) {
+    // here-string: ends at a line that starts with a quote of the same class and @
+    for (let j = i + 1; j < n - 2; j++) {
+      if ((s[j] === '\n' || s[j] === '\r') && cls.includes(s[j + 1]) && s[j + 2] === '@') return j + 3;
+    }
+    return -1;
+  }
+  for (let j = i + 1; j < n; j++) {
+    const c = s[j];
+    if (cls === PS_SQ) {
+      if (cls.includes(c)) {
+        if (s[j + 1] !== undefined && cls.includes(s[j + 1])) j++;
+        else return j + 1;
+      }
+      continue;
+    }
+    if (c === '`') j++;
+    else if (cls.includes(c)) {
+      if (s[j + 1] !== undefined && cls.includes(s[j + 1])) j++;
+      else return j + 1;
+    } else if (c === '$' && s[j + 1] === '(') {
+      const e = psSkipCode(s, j + 2, ')', lvl + 1, here);
+      if (e < 0) return e;
+      j = e - 1;
+    }
+  }
+  return -1;
+}
+
+/** Skip PowerShell code up to the matching close char; returns the index after it, -1, or TOO_DEEP. */
+function psSkipCode(s, i, close, lvl, here = true) {
+  if (lvl > PS_MAX_NEST) return TOO_DEEP;
+  const stack = [close];
+  for (let j = i; j < s.length; j++) {
+    const c = s[j];
+    if (c === '`') j++;
+    else if (psQuoteClass(c)) {
+      const e = psSkipQuote(s, j, lvl, here);
+      if (e < 0) return e;
+      j = e - 1;
+    } else if (c === '(') stack.push(')');
+    else if (c === '{') stack.push('}');
+    else if (c === ')' || c === '}') {
+      if (stack.pop() !== c) return -1;
+      if (!stack.length) return j + 1;
+    }
+  }
+  return -1;
+}
+
+/** Index of the last character of a PowerShell `#` line comment starting at s[i], or -1 when s[i] starts none. */
+function psLineCommentEnd(s, i) {
+  if (s[i] !== '#' || (i > 0 && !/[\s;|&({]/.test(s[i - 1]))) return -1;
+  let j = i;
+  while (j + 1 < s.length && s[j + 1] !== '\n' && s[j + 1] !== '\r') j++;
+  return j;
+}
+
+/**
+ * Top-level PowerShell script blocks `{ ... }` and hash tables `@{ ... }` of a command, quote-aware
+ * ('...', "..." with backtick escapes and $( ... ) inside, curly quotes, here-strings, ${name}, $$, comments).
+ * Returns { blocks: [{ open, body, hash }], bad, deep } where bad means the braces do not balance
+ * or a quote is left open, and deep that subexpressions nest deeper than PS_MAX_NEST.
+ * Nested blocks are found again when a body is walked.
+ */
+export function psBlocks(text, here = true) {
+  const s = String(text ?? '');
+  const n = s.length;
+  const blocks = [];
+  let bad = false;
+  let deep = false;
+  const stack = [];
+  for (let i = 0; i < n && !bad; i++) {
+    const c = s[i];
+    if (c === '`') i++;
+    else if (psQuoteClass(c)) {
+      const e = psSkipQuote(s, i, 0, here);
+      if (e === TOO_DEEP) {
+        deep = bad = true;
+        break;
+      }
+      if (e === -1) {
+        // an unclosed quote runs to the end; only a brace in or before it makes the blocks unknown
+        bad = stack.length > 0 || /[{}]/.test(s.slice(i));
+        break;
+      }
+      i = e - 1;
+    } else if (c === '$' && s[i + 1] === '$') {
+      i++; // $$ is a variable: a { after it opens a script block
+    } else if (c === '$' && s[i + 1] === '{') {
+      const e = s.indexOf('}', i + 2);
+      if (e === -1) bad = true;
+      else i = e;
+    } else if (c === '<' && s[i + 1] === '#') {
+      const e = s.indexOf('#>', i + 2);
+      if (e === -1) bad = true;
+      else i = e + 1;
+    } else if (c === '#' && psLineCommentEnd(s, i) !== -1) {
+      i = psLineCommentEnd(s, i);
+    } else if (c === '{') stack.push({ open: i, hash: s[i - 1] === '@' });
+    else if (c === '}') {
+      const b = stack.pop();
+      if (!b) bad = true;
+      else if (!stack.length) blocks.push({ open: b.open, body: s.slice(b.open + 1, i), hash: b.hash });
+    }
+  }
+  if (stack.length) bad = true;
+  return { blocks, bad, deep };
+}
+
+/**
+ * Entries of a PowerShell hash-table body, split at top-level `;` and line ends (outside quotes, comments and
+ * brackets; a line that ends in an operator, comma or pipe, or is followed by a line starting with a pipe, goes on).
+ * Each entry is { key, value } split at its first top-level `=`, or { key: null, value } when it has none.
+ * Returns null when the body cannot be read (a quote or comment left open, nesting too deep).
+ */
+function psHashEntries(body, here = true) {
+  const s = String(body);
+  const n = s.length;
+  const entries = [];
+  let text = ''; // the entry so far, comments replaced by a space
+  let from = 0; // start of the part of the entry not yet copied into text
+  let eq = -1; // index of the entry's first top-level = in text
+  let depth = 0;
+  let last = ''; // last character of the entry outside comments and whitespace
+  const end = (i) => {
+    text += s.slice(from, i);
+    if (text.trim()) entries.push(eq === -1 ? { key: null, value: text.trim() } : { key: text.slice(0, eq).trim(), value: text.slice(eq + 1).trim() });
+    text = '';
+    from = i + 1;
+    eq = -1;
+    last = '';
+  };
+  for (let i = 0; i < n; i++) {
+    const c = s[i];
+    if (c === '`') {
+      i++;
+      last = c;
+      continue;
+    }
+    if (psQuoteClass(c)) {
+      const e = psSkipQuote(s, i, 0, here);
+      if (e < 0) return null;
+      i = e - 1;
+      last = c;
+      continue;
+    }
+    if (c === '<' && s[i + 1] === '#') {
+      const e = s.indexOf('#>', i + 2);
+      if (e === -1) return null;
+      text += `${s.slice(from, i)} `;
+      from = e + 2;
+      i = e + 1;
+      continue;
+    }
+    if (c === '#' && psLineCommentEnd(s, i) !== -1) {
+      const e = psLineCommentEnd(s, i);
+      text += `${s.slice(from, i)} `;
+      from = e + 1;
+      i = e;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (--depth < 0) return null;
+    } else if (depth === 0 && c === '=' && eq === -1 && s[i + 1] !== '=') eq = text.length + (i - from);
+    else if (depth === 0 && (c === ';' || c === '\n' || c === '\r')) {
+      let j = i + 1;
+      while (j < n && (s[j] === ' ' || s[j] === '\t')) j++;
+      if (c !== ';' && (/[|,=+\-*/%]/.test(last) || s[j] === '|')) continue;
+      end(i);
+      continue;
+    }
+    if (!/\s/.test(c)) last = c;
+  }
+  end(n);
+  return entries;
+}
+
+// Hash-table keys that are plain words or quoted literals (nothing evaluated), and values that are plain literals.
+const PS_SIMPLE_KEY = /^(?:[\w.-]+|'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*")$/;
+// @ and a quote at a line end: a here-string, or a plain quote after @ (x@", a=@")
+const PS_HERE_OPENER = /@["'\u2018-\u201E][\r\n]/;
+const PS_HASH_KEY = /^\s*(?:[\w.-]+|'(?:[^']|'')*'|"(?:[^"`]|`.|"")*")\s*=(?!=)\s*/;
+const PS_LITERAL = /^(?:'(?:[^']|'')*'|"(?:[^"`$]|`.|"")*"|[-+]?\d[\w.]*|\$(?:true|false|null))$/i;
 
 // Leading shell keywords / grouping tokens that are not part of the command itself.
 const NOISE_WORDS = [/[{}!]/y, /time\s+-p/y, /(?:then|do|else|elif|if|while|until|time)/y];
@@ -235,7 +522,7 @@ export function tokenize(segment, mode = 'default') {
     const c = s[i];
     if (start === -1 && !/\s/.test(c)) start = i;
     if (q === "'") {
-      if (c === "'") q = null;
+      if (c === "'" || (ps && PS_SQ.includes(c))) q = null;
       else cur += c;
       continue;
     }
@@ -255,7 +542,7 @@ export function tokenize(segment, mode = 'default') {
       } else if (!ps && c === '\\' && '"\\$`'.includes(s[i + 1] ?? '\0')) {
         cur += s[i + 1];
         i++;
-      } else if (c === '"') q = null;
+      } else if (c === '"' || (ps && PS_DQ.includes(c))) q = null;
       else cur += c;
       continue;
     }
@@ -280,8 +567,8 @@ export function tokenize(segment, mode = 'default') {
       q = 'ansi';
       has = true;
       i++;
-    } else if (c === "'" || c === '"') {
-      q = c;
+    } else if (c === "'" || c === '"' || (ps && psQuoteClass(c))) {
+      q = ps && PS_SQ.includes(c) ? "'" : ps && PS_DQ.includes(c) ? '"' : c;
       has = true;
     } else if (c === '\\' && mode === 'bash' && i + 1 < s.length) {
       if (s[i + 1] !== '\n') cur += s[i + 1];
@@ -355,12 +642,16 @@ export function stripAssignments(segment) {
   return { assignments, rest: s.slice(i).trim() };
 }
 
-/** Bodies of $(...) and `...` found outside single quotes (outermost only). */
-function substitutions(s) {
+/** Bodies of $(...) and `...` found outside single quotes (outermost only); out.ticks holds the indexes of backtick bodies. */
+function substitutions(s, ps = false) {
+  // with ps the curly quotes count as quotes
+  const norm = (c) => (!ps || c === undefined ? c : PS_SQ.includes(c) ? "'" : PS_DQ.includes(c) ? '"' : c);
   const out = [];
+  const ticks = new Set();
+  out.ticks = ticks;
   let q = null;
   for (let i = 0; i < s.length; i++) {
-    const c = s[i];
+    const c = norm(s[i]);
     if (q === "'") {
       if (c === "'") q = null;
       continue;
@@ -373,12 +664,12 @@ function substitutions(s) {
       q = q === c ? null : (q ?? c);
       continue;
     }
-    if (c === '$' && s[i + 1] === '(') {
+    if ((c === '$' || (c === '@' && !q)) && s[i + 1] === '(') {
       let depth = 1;
       let j = i + 2;
       let iq = null;
       for (; j < s.length && depth > 0; j++) {
-        const d = s[j];
+        const d = norm(s[j]);
         if (iq) {
           if (d === '\\' && iq === '"') j++;
           else if (d === iq) iq = null;
@@ -392,6 +683,7 @@ function substitutions(s) {
       const end = s.indexOf('`', i + 1);
       const stop = end === -1 ? s.length : end;
       out.push(s.slice(i + 1, stop));
+      ticks.add(out.length - 1);
       i = stop;
     }
   }
@@ -476,6 +768,423 @@ function psParam(args, names) {
   return null;
 }
 
+// --- terminal launchers: the command they open is re-parsed like a nested shell ---
+
+const SAFE_WORD = /^[\w@%+=:,./\\-]+$/;
+/** Re-join argv into text that tokenises back to the same words. */
+function quoteJoin(argv) {
+  return argv.map((a) => (SAFE_WORD.test(a) ? a : `'${String(a).replace(/'/g, "'\\''")}'`)).join(' ');
+}
+const OPAQUE_BODY = { opaque: true };
+const hasExpansion = (s) => /[$`]/.test(s);
+
+
+/** The raw text after the first word of a segment (leading NAME=value pairs removed). */
+function rawAfterCommand(segment) {
+  const rest = stripAssignments(segment).rest;
+  let i = 0;
+  while (i < rest.length && /\s/.test(rest[i])) i++;
+  const [, next] = readWord(rest, i, false);
+  return rest.slice(next);
+}
+
+/**
+ * PowerShell-style words: quotes ('' and "" with backtick escapes), @( ... ) arrays and comma lists are one word with several
+ * items. Each word: { items, quoted (starts with a quote), expansion (unquoted/double-quoted $ or subexpression) }.
+ */
+function psWords(s) {
+  const words = [];
+  const n = s.length;
+  let i = 0;
+  const ws = (c) => /\s/.test(c);
+  while (i < n) {
+    while (i < n && ws(s[i])) i++;
+    if (i >= n) break;
+    const w = { items: [], quoted: s[i] === "'" || s[i] === '"', expansion: false };
+    let cur = '';
+    let has = false;
+    let afterComma = false;
+    const push = () => { if (has) w.items.push(cur); cur = ''; has = false; };
+    while (i < n) {
+      const c = s[i];
+      if (ws(c)) {
+        let j = i;
+        while (j < n && ws(s[j])) j++;
+        if (afterComma || s[j] === ',') { i = j; continue; }
+        break;
+      }
+      if (c === ',') { push(); afterComma = true; i++; continue; }
+      afterComma = false;
+      if (c === "'") {
+        has = true;
+        i++;
+        while (i < n) {
+          if (s[i] === "'") { if (s[i + 1] === "'") { cur += "'"; i += 2; continue; } break; }
+          cur += s[i++];
+        }
+        i++;
+      } else if (c === '"') {
+        has = true;
+        i++;
+        while (i < n && s[i] !== '"') {
+          if (s[i] === '`' && i + 1 < n) { cur += s[i + 1]; i += 2; continue; }
+          if (s[i] === '$' && /[A-Za-z_{(]/.test(s[i + 1] ?? '')) w.expansion = true;
+          cur += s[i++];
+        }
+        i++;
+      } else if (c === '(' || ((c === '@' || c === '$') && s[i + 1] === '(')) {
+        let depth = 0;
+        let q = null;
+        const open = c === '(' ? i : i + 1;
+        let j = open;
+        for (; j < n; j++) {
+          const d = s[j];
+          if (q) { if (d === q) q = null; continue; }
+          if (d === "'" || d === '"') q = d;
+          else if (d === '(') depth++;
+          else if (d === ')' && --depth === 0) break;
+        }
+        if (c !== '$') {
+          // @( ... ) and plain ( ... ) groups: only quoted literals and commas; a bare word is a command, so anything else is opaque
+          push();
+          const body = s.slice(open + 1, j);
+          const inner = psWords(body);
+          for (const x of inner) w.items.push(...x.items);
+          if (inner.some((x) => x.expansion) || body.replace(/'(?:[^']|'')*'|"(?:[^"`]|`.)*"/g, '').replace(/[\s,]/g, '') !== '') w.expansion = true;
+        } else { w.expansion = true; has = true; cur += s.slice(i, j + 1); }
+        i = j + 1;
+      } else {
+        if (c === '$' && /[A-Za-z_{]/.test(s[i + 1] ?? '')) w.expansion = true;
+        if (c === '`') w.expansion = true;
+        has = true;
+        cur += c;
+        i++;
+      }
+    }
+    push();
+    words.push(w);
+  }
+  return words;
+}
+
+const PS_START_VALUE = new Set(['filepath', 'file', 'path', 'argumentlist', 'args', 'arguments', 'workingdirectory', 'wd', 'verb', 'windowstyle', 'redirectstandardinput', 'redirectstandardoutput', 'redirectstandarderror', 'credential']);
+const PS_START_SWITCH = new Set(['-wait', '-nonewwindow', '-passthru', '-usenewenvironment', '-loadenvironment']);
+const CMD_START_VALUE = new Set(['/d', '/affinity', '/node']);
+const CMD_START_SWITCH = new Set(['/min', '/max', '/wait', '/b', '/i', '/low', '/normal', '/high', '/realtime', '/abovenormal', '/belownormal', '/separate', '/shared']);
+
+/** cmd `start` and PowerShell Start-Process / saps / start. text is the raw text after the command word. */
+function startBodies(name, text) {
+  const out = [];
+  const ws = psWords(text);
+  const named = {};
+  const used = new Set();
+  for (let k = 0; k < ws.length; k++) {
+    const w = ws[k];
+    if (w.quoted || !w.items.length) continue;
+    const m = /^-([A-Za-z]+)(?::(.*))?$/s.exec(w.items[0]);
+    if (!m || !PS_START_VALUE.has(m[1].toLowerCase())) continue;
+    if (m[2] === undefined && w.items.length !== 1) continue;
+    const key = m[1].toLowerCase();
+    used.add(k);
+    // -Name:value, where the value may itself be a comma list
+    if (m[2] !== undefined) named[key] = { items: [m[2], ...w.items.slice(1)].filter((x, n) => n > 0 || x !== '' || w.items.length === 1), expansion: w.expansion };
+    else if (k + 1 < ws.length) { named[key] = ws[k + 1]; used.add(k + 1); }
+  }
+  const pick = (...ns) => ns.map((x) => named[x]).find((v) => v !== undefined);
+  const wdW = pick('workingdirectory', 'wd');
+  const wd = wdW ? wdW.items[0] : undefined;
+  const fileW = pick('filepath', 'file', 'path');
+  const listW = pick('argumentlist', 'args', 'arguments');
+  const free = ws.filter((_, k) => !used.has(k));
+  const mk = (text2) => (wd !== undefined ? { text: text2, chdir: wd } : { text: text2 });
+
+  const run = (words, skipTitle, titleAfter = false) => {
+    let k = skipTitle ? 1 : 0;
+    // switches before the program: PowerShell -Wait ..., cmd /min, /D <dir>, /NODE <n>, /AFFINITY <hex>
+    for (; k < words.length; k++) {
+      const x = words[k];
+      const v = x.items.length === 1 && !x.quoted ? x.items[0].toLowerCase() : '';
+      if (PS_START_SWITCH.has(v) || CMD_START_SWITCH.has(v)) continue;
+      if (CMD_START_VALUE.has(v)) { k++; continue; }
+      break;
+    }
+    // cmd is picky about order, but a title after the switches is cheap to check as well
+    if (titleAfter && k < words.length) {
+      k++;
+      for (; k < words.length; k++) {
+        const x = words[k];
+        const v = x.items.length === 1 && !x.quoted ? x.items[0].toLowerCase() : '';
+        if (PS_START_SWITCH.has(v) || CMD_START_SWITCH.has(v)) continue;
+        if (CMD_START_VALUE.has(v)) { k++; continue; }
+        break;
+      }
+    }
+    let exeW;
+    let rest;
+    if (fileW) { exeW = fileW; rest = words.slice(k); } else { exeW = words[k]; rest = words.slice(k + 1); }
+    if (!exeW || exeW.items.length === 0) return;
+    // the argument list: -ArgumentList, else PowerShell's second positional, else cmd's trailing words
+    let argv;
+    let raw = false;
+    let expansion = exeW.expansion;
+    if (listW) { argv = listW.items; raw = true; expansion ||= listW.expansion; }
+    else if (name !== 'start' && rest.length) { argv = rest[0].items; raw = true; expansion ||= rest.some((x) => x.expansion); }
+    else if (rest.length === 1 && rest[0].items.length > 1) { argv = rest[0].items; raw = true; expansion ||= rest[0].expansion; }
+    else { argv = rest.flatMap((x) => x.items); expansion ||= rest.some((x) => x.expansion); }
+    if (expansion) { out.push(OPAQUE_BODY); return; }
+    const prog = exeW.items[0];
+    // a lone PowerShell string such as 'push origin main' is a whole argument line; array items are joined by spaces
+    out.push(mk(raw ? [quoteJoin([prog]), ...argv].join(' ') : quoteJoin([prog, ...argv])));
+  };
+
+  if (name === 'start') {
+    // cmd takes a first quoted word as the window title; PowerShell takes it as the program: check both readings
+    if (free.length > 1 || (free.length && free[0].quoted)) run(free, true);
+    if (free.length > 2) run(free, false, true);
+    run(free, false);
+  } else run(free, false);
+  return out;
+}
+
+const WT_VALUE = new Set(['-w', '--window', '-d', '--startingdirectory', '--title', '-p', '--profile', '--tabcolor', '--colorscheme', '--size', '--pos', '-H', '-V', '-s', '--size']);
+const WT_VALUE_LOW = new Set([...WT_VALUE].map((x) => x.toLowerCase()));
+const WT_SUBS = new Set(['new-tab', 'nt', 'split-pane', 'sp', 'new-window', 'nw']);
+
+/** Windows Terminal: `wt [-w 0] nt [-d dir] [--title t] <command...> [; nt ...]`. */
+function wtBodies(args) {
+  const out = [];
+  const chunks = [[]];
+  for (const a of args) {
+    if (a === ';' || a === '\\;') { chunks.push([]); continue; }
+    if (!/(?<!\\);/.test(a)) { chunks.at(-1).push(a); continue; }
+    // wt splits its own command line on every unescaped ';', also one inside an argument ('nt;nt', 'echo hi;nt'); the
+    // pieces are command-line text that the opened program splits into words again
+    a.split(/(?<!\\);/).forEach((piece, n) => {
+      if (n > 0) chunks.push([]);
+      chunks.at(-1).push(...piece.split(/\s+/).filter(Boolean));
+    });
+  }
+  for (const c of chunks) {
+    let k = 0;
+    while (k < c.length) {
+      const a = c[k];
+      const low = a.toLowerCase();
+      if (a === '--') { k++; break; }
+      if (WT_SUBS.has(low)) { k++; continue; }
+      if (WT_VALUE_LOW.has(low)) { k += 2; continue; }
+      if (/^--?[A-Za-z]/.test(a)) { k++; continue; }
+      break;
+    }
+    const argv = c.slice(k);
+    if (!argv.length) continue;
+    if (argv.some(hasExpansion)) { out.push(OPAQUE_BODY); continue; }
+    out.push({ text: quoteJoin(argv) });
+  }
+  return out;
+}
+
+/** Quote every unescaped ';' outside quotes as its own word, so re-splitting the text keeps it for wt. */
+function protectSemicolons(s) {
+  let out = '';
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === q) q = null; out += c; continue; }
+    if (c === "'" || c === '"') q = c;
+    if (c === ';' && s[i - 1] !== '\\') out += " ';' ";
+    else out += c;
+  }
+  return out;
+}
+
+const CMD_MAX_LEADINS = 64;
+const CMD_IF_UNARY =new Set(['exist', 'defined', 'errorlevel', 'cmdextversion']);
+const CMD_IF_OPS = new Set(['==', 'equ', 'neq', 'lss', 'leq', 'gtr', 'geq']);
+
+/** The text after a cmd `if` condition: `if [/i] [not] (exist x | defined x | errorlevel n | a==b | a op b)`. */
+function skipCmdIf(text) {
+  let p = text;
+  const word = () => {
+    p = p.trimStart();
+    const [w, next] = readWord(p, 0, false);
+    return { w, low: w.toLowerCase(), next };
+  };
+  // the text after the next word
+  const rest = () => {
+    const { next } = word();
+    return p.slice(next);
+  };
+  let x = word();
+  if (x.low === '/i') { p = p.slice(x.next); x = word(); }
+  if (x.low === 'not') { p = p.slice(x.next); x = word(); }
+  if (CMD_IF_UNARY.has(x.low)) {
+    p = p.slice(x.next);
+    return rest();
+  }
+  // comparison: a==b in one word, or a == b, a== b, a ==b, a EQU b
+  p = p.slice(x.next);
+  if (x.w.includes('==') && !x.w.endsWith('==')) return p;
+  if (x.w.endsWith('==')) return rest();
+  const op = word();
+  if (CMD_IF_OPS.has(op.low)) {
+    p = p.slice(op.next);
+    return rest();
+  }
+  if (op.w.startsWith('==')) {
+    p = p.slice(op.next);
+    return op.w === '==' ? rest() : p;
+  }
+  return p;
+}
+
+/** The command after `cmd [/switches] /c|/k`, or null when cmd has no /c or /k (an interactive shell). */
+function cmdSwitchBody(text) {
+  let p = text;
+  for (;;) {
+    p = p.trimStart();
+    const [w, next] = readWord(p, 0, false);
+    if (!w.startsWith('/')) return null;
+    if (/^\/[ck]/i.test(w)) return `${w.slice(2)}${p.slice(next)}`;
+    p = p.slice(next);
+  }
+}
+
+/**
+ * Extra bodies of a cmd body: cmd runs each command between &, &&, ||, |, and parentheses (^ escapes), after lead-ins
+ * such as @, `start ["title"] [/switches]`, call, if <condition>, else, for ... do and cmd /c|/k. A command that had lead-ins
+ * comes back without them; one starting with wt comes back as `wt ...` with its ';' kept for wt.
+ */
+function cmdBodies(body) {
+  const parts = [];
+  let cur = '';
+  let q = false;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '"') q = !q;
+    if (!q && c === '^' && i + 1 < body.length) { cur += body[++i]; continue; }
+    if (!q && '&|()'.includes(c)) { parts.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  parts.push(cur);
+  const out = [];
+  const isWt = (w) => baseName(w.replace(/"/g, '')) === 'wt';
+  for (const part of parts) {
+    let p = part;
+    let w;
+    let next;
+    // lead-ins that still run the command after them: @, start ..., call, if <condition>, else, for ... do, cmd /c|/k
+    let guard = 0;
+    for (; guard < CMD_MAX_LEADINS; guard++) {
+      p = p.replace(/^[\s@]+/, '');
+      [w, next] = readWord(p, 0, true);
+      const low = w.replace(/"/g, '').toLowerCase();
+      if (low === 'start') {
+        p = p.slice(next);
+        for (;;) {
+          p = p.trimStart();
+          [w, next] = readWord(p, 0, true);
+          if (!w || isWt(w)) break;
+          const lw = w.toLowerCase();
+          if (w.startsWith('"') || CMD_START_SWITCH.has(lw)) { p = p.slice(next); continue; }
+          if (CMD_START_VALUE.has(lw)) { p = p.slice(next).trimStart(); p = p.slice(readWord(p, 0, true)[1]); continue; }
+          break;
+        }
+        continue;
+      }
+      if (low === 'call' || low === 'else' || low === 'do') { p = p.slice(next); continue; }
+      if (low === 'if') { p = skipCmdIf(p.slice(next)); continue; }
+      if (baseName(low) === 'cmd') {
+        const body2 = cmdSwitchBody(p.slice(next));
+        if (body2 === null) break;
+        p = body2;
+        continue;
+      }
+      break;
+    }
+    if (guard >= CMD_MAX_LEADINS) {
+      // more lead-ins than we follow: what runs after them is not known
+      out.push(OPAQUE_DEEP);
+      continue;
+    }
+    if (!w || !isWt(w)) {
+      // the command after the lead-ins (cmd /c "if 1==1 git push origin main", "call git push", "@git push")
+      if (p.trim() && p.trim() !== part.trim()) out.push(p.trim());
+      continue;
+    }
+    const rest = p.slice(next);
+    if (rest.includes(';')) out.push(`wt ${protectSemicolons(rest)}`);
+  }
+  return out;
+}
+
+const TERMINAL_EMULATORS = new Set(['x-terminal-emulator', 'xterm', 'konsole', 'gnome-terminal', 'mate-terminal', 'xfce4-terminal', 'terminator', 'tilix', 'lxterminal', 'urxvt', 'rxvt', 'alacritty', 'kitty', 'foot']);
+
+/** Linux terminals: the command follows -e / -x / --. */
+const KITTY_BOOL = new Set(['--hold', '--single-instance', '-1', '--detach', '--detached', '--wait-for-single-instance-window-close', '--debug-config']);
+const KITTY_VALUE = new Set(['--class', '--name', '--title', '-T', '--directory', '-d', '--config', '-c', '--override', '-o', '--session', '--listen-on', '--start-as', '--os-window-state', '--instance-group', '--watcher']);
+const FOOT_BOOL = new Set(['-H', '--hold', '-L', '--login-shell', '-m', '--maximized', '-F', '--fullscreen', '-S', '--server']);
+const FOOT_VALUE = new Set(['-t', '--title', '-a', '--app-id', '-w', '--window-size-pixels', '-W', '--window-size-chars', '-c', '--config', '-f', '--font', '-o', '--override', '-D', '--working-directory', '-T', '-s']);
+
+const NO_RUN = new Set(['--version', '-v', '--help', '-h']);
+
+/** kitty and foot take the command directly after their own options; an option we do not know makes it opaque. */
+function optionedTerminalBody(args, bools, values) {
+  let k = 0;
+  while (k < args.length) {
+    const a = args[k];
+    if (a === '--') { k++; break; }
+    if (!a.startsWith('-')) break;
+    const flag = a.includes('=') ? a.slice(0, a.indexOf('=')) : a;
+    if (NO_RUN.has(flag)) return []; // prints version or help, runs nothing
+    if (bools.has(flag)) k++;
+    else if (values.has(flag)) k += a.includes('=') ? 1 : 2;
+    else return [OPAQUE_BODY];
+  }
+  if (args[0] === '@') return [OPAQUE_BODY];
+  return terminalTail(args.slice(k));
+}
+
+function terminalBodies(name, args) {
+  if (name === 'kitty') return optionedTerminalBody(args, KITTY_BOOL, KITTY_VALUE);
+  if (name === 'foot') return optionedTerminalBody(args, FOOT_BOOL, FOOT_VALUE);
+  let k = args.findIndex((a) => a === '-e' || a === '-x' || a === '--' || a === '--command' || a === '--exec' || a.startsWith('--command=') || a.startsWith('--exec='));
+  if (k === -1) return [];
+  const a = args[k];
+  if (a.includes('=')) return terminalTail([a.slice(a.indexOf('=') + 1)]);
+  return terminalTail(args.slice(k + 1));
+}
+
+function terminalTail(argv) {
+  if (!argv.length) return [];
+  if (argv.some(hasExpansion)) return [OPAQUE_BODY];
+  // a single word with spaces is a whole command line (gnome-terminal -e "git push origin main")
+  return [{ text: argv.length === 1 ? argv[0] : quoteJoin(argv) }];
+}
+
+// words a prefix wrapper (nohup, sudo, env ...) may stop at: nested shells are in SHELL_LIKE, these open another window
+const LAUNCHERS = new Set([...TERMINAL_EMULATORS, 'wt', 'osascript']);
+
+/** osascript: pull `do script "..."` bodies out of the AppleScript; any other script is opaque. */
+function osascriptBodies(args) {
+  const out = [];
+  let any = false;
+  for (let k = 0; k < args.length; k++) {
+    if (args[k] !== '-e' || k + 1 >= args.length) continue;
+    any = true;
+    const script = args[++k];
+    const re = /do script\s+"((?:[^"\\]|\\.)*)"/gi;
+    let m;
+    let found = false;
+    while ((m = re.exec(script))) {
+      found = true;
+      out.push({ text: m[1].replace(/\\(["\\])/g, '$1') });
+    }
+    if (!found) out.push(OPAQUE_BODY);
+  }
+  if (!any && args.length) out.push(OPAQUE_BODY);
+  return out;
+}
+
 /** Bodies that other command carriers run (PowerShell, git submodule foreach, find -exec, runners). */
 function carrierBodies(toks, i, segment) {
   const out = [];
@@ -506,22 +1215,19 @@ function carrierBodies(toks, i, segment) {
   if (name === 'iex' || name === 'invoke-expression') {
     const p = psParam(args, ['command']);
     const body = p ? p.value : args.join(' ');
-    if (body) out.push({ text: body });
+    if (body) out.push({ text: body, ps: true });
   } else if (name === 'start-process' || name === 'saps' || name === 'start') {
-    const file = psParam(args, ['filepath', 'file', 'path']);
-    const list = psParam(args, ['argumentlist', 'args', 'arguments']);
-    const wd = psParam(args, ['workingdirectory', 'wd']);
-    const used = new Set();
-    for (const p of [file, list, wd]) if (p) for (let k = 0; k < p.len; k++) used.add(p.at + k);
-    const pos = args.filter((a, k) => !used.has(k) && !/^[-/][A-Za-z]/.test(a) && a !== '');
-    const exe = file ? file.value : pos.shift();
-    const argv = list ? list.value.split(',') : pos.length ? [pos.join(' ')] : [];
-    const text = [exe, ...argv].filter(Boolean).join(' ').trim();
-    if (text) out.push(wd ? { text, chdir: wd.value } : { text });
+    out.push(...startBodies(name, rawAfterCommand(segment)));
+  } else if (name === 'wt') {
+    out.push(...wtBodies(args));
+  } else if (TERMINAL_EMULATORS.has(name)) {
+    out.push(...terminalBodies(name, args));
+  } else if (name === 'osascript') {
+    out.push(...osascriptBodies(args));
   } else if (name === 'invoke-command' || name === 'icm') {
     const a = segment.indexOf('{');
     const b = segment.lastIndexOf('}');
-    if (a !== -1) out.push({ text: segment.slice(a + 1, b > a ? b : segment.length) });
+    if (a !== -1) out.push({ text: segment.slice(a + 1, b > a ? b : segment.length), ps: true });
   } else if (name === 'cross-env-shell') {
     const body = args.filter((x) => !ASSIGN.test(x)).join(' ');
     if (body) out.push({ text: body });
@@ -558,13 +1264,19 @@ function wrapperInfo(segment) {
   while (i < toks.length && ASSIGN.test(toks[i])) i++;
   if (i >= toks.length) return { bodies: [], opaque: false };
   const carried = carrierBodies(toks, i, segment);
-  const done = (bodies, opaque, evalOpaque = false) => ({ bodies: [...carried, ...bodies.map((text) => ({ text }))], opaque, evalOpaque });
+  // ps: whether the own bodies are PowerShell code (undefined: same language as the segment)
+  const done = (bodies, opaque, evalOpaque = false, ps = undefined) => ({
+    bodies: [...carried.filter((c) => c.text !== undefined), ...bodies.map((text) => ({ text, ps }))],
+    opaque: opaque || carried.some((c) => c.opaque),
+    evalOpaque,
+  });
   if (isWrapper(baseName(toks[i]))) {
     // Skip the prefix together with its flags and values, up to the next shell-like token.
     let k = i + 1;
-    while (k < toks.length && !SHELL_LIKE.has(baseName(toks[k]))) k++;
+    while (k < toks.length && !SHELL_LIKE.has(baseName(toks[k])) && !LAUNCHERS.has(baseName(toks[k]))) k++;
     if (k >= toks.length) return done([], false);
     i = k;
+    if (LAUNCHERS.has(baseName(toks[k]))) carried.push(...carrierBodies(toks, k, segment));
   }
   const name = baseName(toks[i]);
   const args = toks.slice(i + 1);
@@ -576,13 +1288,13 @@ function wrapperInfo(segment) {
   if (name === 'eval') {
     // eval of command output is opaque, except well-known environment setup tools
     const generated = substitutions(args.join(' ')).some((b) => !EVAL_SAFE.has(baseName(tokens(b)[0])));
-    return done(args.length ? [args.join(' ')] : [], false, generated);
+    return done(args.length ? [args.join(' ')] : [], false, generated, false);
   }
   if (POSIX_SHELLS.has(name)) {
     const k = args.findIndex((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a));
     if (k !== -1) {
       const j = afterFlag(k);
-      return done(j === -1 ? [] : [args[j]], false);
+      return done(j === -1 ? [] : [args[j]], false, false, false);
     }
     // No -c: reads stdin unless it is given a script file.
     const found = [];
@@ -590,7 +1302,7 @@ function wrapperInfo(segment) {
     if (hs !== -1 && hs + 1 < args.length) found.push(args[hs + 1]);
     const positional = args.filter((a) => !a.startsWith('-'));
     const redirected = args.some((a) => a.startsWith('<'));
-    return done(found, positional.length === 0 || redirected);
+    return done(found, positional.length === 0 || redirected, false, false);
   }
   if (PS_SHELLS.has(name)) {
     const e = args.findIndex(isPsEncodedFlag);
@@ -601,10 +1313,10 @@ function wrapperInfo(segment) {
       } catch {
         decoded = '';
       }
-      return done(decoded ? [decoded] : [], false);
+      return done(decoded ? [decoded] : [], false, false, true);
     }
     const k = args.findIndex(isPsCommandFlag);
-    if (k !== -1 && k + 1 < args.length) return done([args.slice(k + 1).join(' ')], false);
+    if (k !== -1 && k + 1 < args.length) return done([args.slice(k + 1).join(' ')], false, false, true);
     const hasWork = args.some((a) => !a.startsWith('-')) && args.every((a) => a !== '-');
     return done([], !hasWork || args.includes('-'));
   }
@@ -613,7 +1325,10 @@ function wrapperInfo(segment) {
     if (k === -1) return done([], false);
     const first = args[k].slice(2); // e.g. /c"git push" tokenises to "/cgit push"
     const body = [first, ...args.slice(k + 1)].filter((x) => x !== '').join(' ');
-    return done(body ? [body] : [], false);
+    // cmd has no ';' separator, but wt does: every wt command in the body is also checked with its ';' kept for wt,
+    // and every command after cmd lead-ins (if, call, @ ...) is checked without them (see cmdBodies).
+    // The body itself keeps every ';' where it is, so a nested shell body is still split by the checks that follow.
+    return done(body ? [body, ...cmdBodies(body)] : [], false, false, false);
   }
   return done([], false);
 }
@@ -758,22 +1473,34 @@ function nextState(seg, st, w) {
  * after an absolute cd, '~'-prefixed after `cd ~`, null when unknown, for example after
  * `cd -`, `popd` or `cd $X`) and `envs` (variables assigned by `export X=`, `X=...;`,
  * `$env:X=`, `set X=` and PowerShell `$x =`). Parenthesised subshells restore the state.
- * With `budget` ({maxSegments, maxVars}) the walk stops once a limit is passed and the
- * returned array carries `overBudget` (a short reason).
+ * With `budget` ({maxSegments, maxVars, maxBlockWalks, maxNestedBytes}) the walk stops once a limit is passed
+ * (or the nesting overflows the stack) and the returned array carries `overBudget` (a short reason).
  * The `envs` objects are frozen and shared between segments; copy before changing them.
  * @param {string} command
- * @param {{maxSegments?: number, maxVars?: number}} [budget]
+ * @param {{maxSegments?: number, maxVars?: number, maxBlockWalks?: number, maxNestedBytes?: number}} [budget]
  * @returns {Array<{segment: string, cwd: string | null, envs: Readonly<Record<string, string>>}> & {overBudget?: string}}
  */
-export function expandWithState(command, budget = {}) {
+export function expandWithState(command, budget = {}, { ps = false } = {}) {
   const out = [];
   const seen = new Set();
   const ids = new Map();
   const maxSegments = budget.maxSegments ?? Infinity;
+  const maxBlockWalks = budget.maxBlockWalks ?? Infinity;
+  const maxNestedBytes = budget.maxNestedBytes ?? Infinity;
   const OVER = Symbol('over');
   let overReason = null;
+  let blockWalks = 0;
+  let nestedBytes = 0;
   const w = {
     maxVars: budget.maxVars ?? Infinity,
+    // every PowerShell script block or hash table walked, and every character of nested text walked, counts
+    block: () => {
+      if (++blockWalks > maxBlockWalks) throw w.over(`more than ${maxBlockWalks} script blocks`);
+    },
+    spend: (n) => {
+      nestedBytes += n;
+      if (nestedBytes > maxNestedBytes) throw w.over(`more than ${Math.round(maxNestedBytes / 1024)} KB of nested commands`);
+    },
     // equal derivations (same parent state, same changes) share an id, so both scan passes dedup
     intern: (k) => {
       let id = ids.get(k);
@@ -794,22 +1521,62 @@ export function expandWithState(command, budget = {}) {
     },
   };
   try {
-    walk(String(command ?? ''), { cwd: '.', envs: Object.freeze({}), id: 0 }, 0, w);
+    walk(String(command ?? ''), { cwd: '.', envs: Object.freeze({}), id: 0 }, 0, w, ps);
   } catch (err) {
-    if (err !== OVER) throw err;
+    // a stack overflow on some nesting nobody foresaw is opaque too: the caller must get an answer, not a throw
+    if (err instanceof RangeError && /call stack/i.test(err.message)) overReason = 'nesting too deep to read';
+    else if (err !== OVER) throw err;
     out.overBudget = overReason;
   }
   return out;
 }
 
-function walk(text, state0, depth, w) {
+// tick: text is a backtick body; in PowerShell a backtick is an escape, so braces there need not balance
+function walk(text, state0, depth, w, ps = false, hash = false, tick = false) {
   const { emit } = w;
-  const passes = [scan(text, false, true)];
-  if (text.includes('\\')) passes.push(scan(text, true, true));
-  for (const items of passes) {
+  if (depth > 0) w.spend(text.length);
+  if (hash === true) {
+    walkHash(text, state0, depth, w);
+    return;
+  }
+  // PowerShell reads @"<newline> as a here-string only where a word starts in expression position; x@" or a=@" is a
+  // plain quote. Text that could be either is read both ways (like the two backslash readings) and both are checked.
+  const readings = ps && PS_HERE_OPENER.test(text) ? [true, false] : [true];
+  const passes = [];
+  for (const here of readings) {
+    // PowerShell script blocks and hash tables: their bodies are commands too (the outer text is still checked)
+    const blk = ps ? psBlocks(text, here) : { blocks: [], bad: false, deep: false };
+    if (blk.deep) emit(OPAQUE_DEEP, state0);
+    else if (blk.bad && !tick) emit(OPAQUE_BRACES, state0);
+    passes.push({ items: scan(text, false, true, ps, here), blk });
+    if (text.includes('\\')) passes.push({ items: scan(text, true, true, ps, here), blk });
+  }
+  // Each block is walked once per state it is reached with: both scan passes reach the same blocks, and walking
+  // them again in the second pass would double the work at every nesting level.
+  const walked = new Set();
+  const after = new Map(); // item (place, state, text) -> state after it
+  for (const { items, blk } of passes) {
     let st = state0;
     const stack = [];
-    for (const it of items) {
+    let bi = 0;
+    const blocksBefore = (end) => {
+      for (; bi < blk.blocks.length && blk.blocks[bi].open < end; bi++) {
+        const b = blk.blocks[bi];
+        if (!b.body.trim()) continue;
+        // the same block (same place, same body) in another reading or pass is not walked again
+        const key = `${b.open}\0${b.body.length}\0${b.hash}\0${st.cwd}\0${st.id}`;
+        if (walked.has(key)) continue;
+        walked.add(key);
+        if (depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
+        else {
+          w.block();
+          walk(b.body, st, depth + 1, w, true, b.hash);
+        }
+      }
+    };
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k];
+      blocksBefore(items.pos[k]);
       if (it === OPEN) {
         stack.push(st);
         continue;
@@ -818,22 +1585,73 @@ function walk(text, state0, depth, w) {
         if (stack.length) st = stack.pop();
         continue;
       }
-      const seg = clean(it);
+      // An item another pass or reading already handled (same place, same text, same state) gives the same result.
+      const memoKey = `${items.pos[k]}\0${st.cwd}\0${st.id}\0${it}`;
+      const memo = after.get(memoKey);
+      if (memo) {
+        st = memo;
+        continue;
+      }
+      // PowerShell: `$p = git push`, `[void](...)`, `. git push` run the command after the lead-in
+      let raw = clean(it);
+      if (hash === 'items') {
+        // a hash-table body that cannot be split into entries: drop a leading key = from every item
+        raw = raw.replace(PS_HASH_KEY, '').trim();
+        if (PS_LITERAL.test(raw)) continue;
+      }
+      const seg = ps ? psLead(raw) : raw;
       if (!seg) continue;
       if (emit(seg, st) && !seg.startsWith(OPAQUE_PREFIX)) {
         const info = wrapperInfo(seg);
-        const bodies = [...info.bodies, ...substitutions(seg).map((b) => ({ text: b }))];
+        const bodies = [...info.bodies, ...substitutions(seg, ps).map((b, k, all) => ({ text: b, tick: all.ticks.has(k) }))];
         if (bodies.length && depth >= MAX_ROUNDS) emit(OPAQUE_DEEP, st);
         else {
           for (const b of bodies) {
             const cwd = b.cwdUnknown ? null : b.chdir !== undefined ? joinCwd(st.cwd, b.chdir) : st.cwd;
-            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w);
+            walk(b.text, cwd === st.cwd ? st : { cwd, envs: st.envs, id: st.id }, depth + 1, w, b.ps ?? ps, false, b.tick);
           }
         }
         if (info.opaque) emit(OPAQUE_STDIN, st);
         if (info.evalOpaque) emit(OPAQUE_EVAL, st);
       }
-      st = nextState(seg, st, w);
+      // the lead-in may itself set a variable ($b = 'main'); the command after it may change directory
+      st = nextState(raw, st, w);
+      if (seg !== raw) st = nextState(seg, st, w);
+      after.set(memoKey, st);
     }
+    blocksBefore(Infinity);
+  }
+}
+
+/**
+ * A PowerShell hash-table body: every value that is not a plain literal is a command, and so is every key that is not
+ * a plain word or quoted literal (`(git push origin main) = 1`). An entry without a top-level `=`, or a body that cannot
+ * be split into entries, is checked as a command and is also opaque.
+ */
+function walkHash(text, st, depth, w) {
+  const readings = PS_HERE_OPENER.test(text) ? [true, false] : [true];
+  const all = [];
+  for (const here of readings) {
+    const entries = psHashEntries(text, here);
+    if (!entries) {
+      walk(text, st, depth, w, true, 'items');
+      w.emit(OPAQUE_HASH, st);
+      return;
+    }
+    all.push(...entries);
+  }
+  const done = new Set();
+  for (const { key, value } of all) {
+    const k = `${key}\0${value}`;
+    if (done.has(k)) continue;
+    done.add(k);
+    if (key === null) {
+      walk(value, st, depth, w, true);
+      // one word without = (stash@{0}, @{u}) is a string or a parse error, never a command line
+      if (/\s/.test(value)) w.emit(OPAQUE_HASH, st);
+      continue;
+    }
+    if (!PS_SIMPLE_KEY.test(key)) walk(key, st, depth, w, true);
+    if (value && !PS_LITERAL.test(value)) walk(value, st, depth, w, true);
   }
 }

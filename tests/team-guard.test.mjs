@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { guard, PRIVILEGED, LANE_CMDS } from '../hooks/lib/team/guard.mjs';
 
-const CMDS = ['init', 'coordinator', 'worker', 'done', 'board', 'stage', 'deliver', 'ask', 'reserve'];
-const SOLO_OK = ['init', 'board', 'reserve', 'ask'];
+const CMDS = ['init', 'coordinator', 'worker', 'done', 'board', 'stage', 'deliver', 'ask', 'reserve', 'start', 'event', 'room'];
+const SOLO_OK = ['init', 'start', 'board', 'reserve', 'ask'];
 
 function expected(claude, role, cmd) {
   if (!claude) return true;
+  if (cmd === 'room') return false;
   if (role === 'coordinator') return true;
   if (role === 'worker') return !PRIVILEGED.includes(cmd);
   return SOLO_OK.includes(cmd);
@@ -21,6 +22,7 @@ for (const claude of [false, true]) {
         if (role) env.OFFLIMITS_ROLE = role;
         const r = guard(cmd, env);
         if (expected(claude, role, cmd)) assert.equal(r, null);
+        else if (cmd === 'room') assert.equal(r, 'offlimits team: "room" answers approvals for the human; start it yourself from a terminal.');
         else assert.equal(r, `offlimits team: "${cmd}" is for the coordinator (or a human terminal). Hand over instead of working around this.`);
       });
     }
@@ -42,6 +44,6 @@ test('custom roleEnv', () => {
 });
 
 test('constants', () => {
-  assert.deepEqual(PRIVILEGED, ['coordinator', 'worker', 'done', 'init']);
+  assert.deepEqual(PRIVILEGED, ['coordinator', 'worker', 'done', 'init', 'start', 'event']);
   assert.deepEqual(LANE_CMDS, ['stage', 'deliver', 'ask']);
 });

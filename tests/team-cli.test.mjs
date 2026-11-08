@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { main } from '../hooks/lib/team/cli.mjs';
+import { readEvents } from '../hooks/lib/team/events.mjs';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
@@ -626,5 +627,253 @@ test('worker refuses to start on an unreadable board.json and keeps it', async (
     assert.match(w.err, /board\.json is unreadable; fix or delete it/);
     assert.equal(fs.readFileSync(path.join(f.dir, 'board.json'), 'utf8'), '{"lanes":{"a":');
     assert.ok(!fs.existsSync(path.join(f.tmp, 'repo-demo')));
+  } finally { f.cleanup(); }
+});
+
+const SESSION = {
+  KEEP: '1', OFFLIMITS_ROLE: 'worker', MY_ROLE: 'worker', OFFLIMITS_LANE: 'y', OFFLIMITS_TEAM_LAUNCHER_PID: '1',
+  CLAUDECODE: '1', CLAUDE_PID: '9', AI_AGENT: 'claude', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SSE_PORT: '1',
+  CLAUDE_CODE_SESSION_ID: 's', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_SESSION_ATTENDED: '1',
+  CLAUDE_CODE_EXECPATH: 'x', CLAUDE_CODE_SHELL_LAUNCHER_SCRIPT: 'x', CLAUDE_CONFIG_DIR: 'keep',
+};
+
+test('start opens the coordinator in a new terminal with a scrubbed env', async () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(path.join(f.root, 'offlimits.json'), JSON.stringify({ roleEnv: 'MY_ROLE', team: {} }));
+    const seen = [];
+    // MY_ROLE=coordinator lets the guard pass inside Claude; the launched window must not inherit it
+    const r = await f.run(['start'], { env: { ...SESSION, MY_ROLE: 'coordinator' }, extra: { openTerminal: (spec, fn, env) => seen.push({ spec, env }) } });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /opened the coordinator in a new terminal; talk to it there/);
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].env, { KEEP: '1', CLAUDE_CONFIG_DIR: 'keep' });
+    const line = seen[0].spec.args.join(' ');
+    assert.match(line, /team\.mjs/);
+    assert.match(line, /coordinator/);
+    assert.ok(!line.includes('MY_ROLE'));
+    assert.equal(f.calls.spawn.length, 0);
+  } finally { f.cleanup(); }
+});
+
+test('start --print, terminal none and a null spec print the command', async () => {
+  const f = fixture();
+  try {
+    const p = await f.run(['start', '--print'], { extra: { openTerminal: () => assert.fail('opened') } });
+    assert.equal(p.code, 0, p.err);
+    assert.match(p.out, /cd "/);
+    assert.match(p.out, /node .*team\.mjs.* coordinator/);
+    f.setTeam({ terminal: 'none' });
+    const n = await f.run(['start'], { extra: { openTerminal: () => assert.fail('opened') } });
+    assert.equal(n.code, 0, n.err);
+    assert.match(n.out, /coordinator/);
+    f.setTeam({});
+    const z = await f.run(['start'], { extra: { platform: 'plan9', openTerminal: () => assert.fail('opened') } });
+    assert.equal(z.code, 0, z.err);
+    assert.match(z.out, /node .*team\.mjs.* coordinator/);
+  } finally { f.cleanup(); }
+});
+
+test('start has the coordinator checks: worktree, bad team, live coordinator, worker role', async () => {
+  const f = fixture();
+  try {
+    const opened = () => assert.fail('opened');
+    const wt = path.join(f.tmp, 'wt');
+    git(f.root, 'worktree', 'add', '-q', '-b', 'feat/wt', wt);
+    const a = await f.run(['start'], { cwd: wt, extra: { openTerminal: opened } });
+    assert.equal(a.code, 2);
+    assert.match(a.err, /main checkout/);
+    fs.writeFileSync(path.join(f.root, 'offlimits.json'), JSON.stringify({ team: 'yes' }));
+    assert.equal((await f.run(['start'], { extra: { openTerminal: opened } })).code, 2);
+    f.setTeam({});
+    const child = await liveChild();
+    try {
+      fs.mkdirSync(f.dir, { recursive: true });
+      fs.writeFileSync(path.join(f.dir, 'coordinator.json'), JSON.stringify({ pid: child.pid, startedAt: 'x' }));
+      const b = await f.run(['start'], { extra: { openTerminal: opened } });
+      assert.equal(b.code, 4);
+      assert.match(b.err, /a coordinator is already running \(pid \d+\)/);
+    } finally { child.kill(); }
+    const w = await f.run(['start'], { env: { CLAUDECODE: '1', OFFLIMITS_ROLE: 'worker' }, extra: { openTerminal: opened } });
+    assert.equal(w.code, 3);
+  } finally { f.cleanup(); }
+});
+
+test('init in an empty folder runs git init and prints the next step', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-empty-')));
+  try {
+    const stdout = { s: '', write(x) { this.s += x; return true; } };
+    const code = await main(['init'], { env: {}, cwd: tmp, stdout, stderr: { write() {} }, has: () => true });
+    assert.equal(code, 0, stdout.s);
+    assert.ok(fs.existsSync(path.join(tmp, '.git')));
+    assert.ok(fs.existsSync(path.join(tmp, 'offlimits.json')));
+    assert.ok(fs.existsSync(path.join(tmp, 'CLAUDE.md')));
+    assert.match(stdout.s, /initialised a git repository in /);
+    assert.match(stdout.s, /Next: commit these files \(git add offlimits\.json CLAUDE\.md \.gitignore \.github\/pull_request_template\.md\), then run \/offlimits start in Claude \(or 'team coordinator' in a terminal\)\./);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('init inside an existing repo does not run git init again', async () => {
+  const f = fixture();
+  try {
+    const gitDir = path.join(f.root, '.git');
+    const headFile = path.join(gitDir, 'HEAD');
+    const before = { head: fs.readFileSync(headFile, 'utf8'), m: fs.statSync(gitDir).mtimeMs, hm: fs.statSync(headFile).mtimeMs };
+    const sub = path.join(f.root, 'sub');
+    fs.mkdirSync(sub);
+    const r = await f.run(['init'], { cwd: sub });
+    assert.equal(r.code, 0, r.err);
+    assert.ok(!/initialised a git repository/.test(r.out));
+    assert.ok(!fs.existsSync(path.join(sub, '.git')));
+    assert.equal(fs.readFileSync(headFile, 'utf8'), before.head);
+    assert.equal(fs.statSync(headFile).mtimeMs, before.hm);
+    assert.equal(fs.statSync(gitDir).mtimeMs, before.m);
+    assert.match(r.out, /Next: commit these files/);
+  } finally { f.cleanup(); }
+});
+
+function neverInit(extra = {}) {
+  return { gitInit: () => assert.fail('git init must not run'), ...extra };
+}
+
+test('init in a subfolder of a repo never calls git init, even when git itself fails', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-fake-')));
+  try {
+    // a bare ".git" folder git cannot read: every git call fails, the walk still sees it
+    fs.mkdirSync(path.join(tmp, '.git'));
+    const sub = path.join(tmp, 'a', 'b');
+    fs.mkdirSync(sub, { recursive: true });
+    const stderr = { s: '', write(x) { this.s += x; return true; } };
+    const calls = [];
+    await main(['init'], { env: {}, cwd: sub, stdout: { write() {} }, stderr, has: () => true, gitInit: (d) => { calls.push(d); } });
+    // a spy, not a throw: if the walk-up failed to see the parent .git, this records the call and the test fails
+    assert.deepEqual(calls, []);
+    assert.ok(!fs.existsSync(path.join(sub, '.git')));
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('init in a git worktree (.git is a file) does not git init', async () => {
+  const f = fixture();
+  try {
+    const wt = path.join(f.tmp, 'wt');
+    git(f.root, 'worktree', 'add', '-q', '-b', 'feat/wt', wt);
+    assert.ok(fs.statSync(path.join(wt, '.git')).isFile());
+    const r = await f.run(['init'], { cwd: wt, extra: neverInit() });
+    assert.ok(!/initialised a git repository/.test(r.out));
+  } finally { f.cleanup(); }
+});
+
+test('init honours GIT_DIR and does not git init', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-gd-')));
+  try {
+    const stderr = { s: '', write(x) { this.s += x; return true; } };
+    await main(['init'], { env: { GIT_DIR: path.join(tmp, 'elsewhere.git') }, cwd: tmp, stdout: { write() {} }, stderr, has: () => true, ...neverInit() });
+    assert.ok(!fs.existsSync(path.join(tmp, '.git')));
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('init refuses to git init in the home directory', async () => {
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ol-home-')));
+  try {
+    const stderr = { s: '', write(x) { this.s += x; return true; } };
+    const code = await main(['init'], { env: {}, cwd: tmp, homedir: () => tmp, stdout: { write() {} }, stderr, has: () => true, ...neverInit() });
+    assert.equal(code, 2);
+    assert.match(stderr.s, /make a project folder first/);
+    assert.ok(!fs.existsSync(path.join(tmp, '.git')));
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('isUnsafeInitDir flags the home directory and a drive root', async () => {
+  const { isUnsafeInitDir } = await import('../hooks/lib/team/init.mjs');
+  const root = path.parse(process.cwd()).root;
+  assert.equal(isUnsafeInitDir(root, os.tmpdir()), true);
+  assert.equal(isUnsafeInitDir(os.tmpdir(), os.tmpdir()), true);
+  assert.equal(isUnsafeInitDir(path.join(os.tmpdir(), 'proj'), os.tmpdir()), false);
+  // the injected platform decides case folding, not the host
+  assert.equal(isUnsafeInitDir('/Home/Me', '/home/me', 'linux'), false);
+  assert.equal(isUnsafeInitDir('/Home/Me', '/home/me', 'win32'), true);
+});
+
+test('terminal env scrub is case-insensitive on win32 and exact elsewhere', async () => {
+  const { scrubEnv } = await import('../hooks/lib/team/cli.mjs');
+  const env = { Path: 'p', ClaudeCode: '1', claude_code_entrypoint: 'cli', Offlimits_Role: 'worker', my_role: 'x', KEEP: '1' };
+  assert.deepEqual(scrubEnv(env, 'MY_ROLE', 'win32'), { Path: 'p', KEEP: '1' });
+  assert.deepEqual(scrubEnv(env, 'MY_ROLE', 'linux'), { Path: 'p', ClaudeCode: '1', claude_code_entrypoint: 'cli', Offlimits_Role: 'worker', my_role: 'x', KEEP: '1' });
+  assert.deepEqual(scrubEnv({ CLAUDECODE: '1', MY_ROLE: 'c', K: '1' }, 'MY_ROLE', 'linux'), { K: '1' });
+});
+
+test('worker, stage, deliver, ask, reserve and done write events', async () => {
+  const f = fixture();
+  try {
+    f.setTeam({ reservations: { migration: { scan: 'mig', pattern: '^(\d+)_' } } });
+    fs.mkdirSync(path.join(f.root, 'mig'));
+    assert.equal((await f.run(['worker', 'demo', '--brief', path.join(f.tmp, 'b.md'), '--print'])).code, 0);
+    assert.equal((await f.run(['stage', 'designing', '--lane', 'demo', '--note', 'n1'])).code, 0);
+    fs.writeFileSync(path.join(f.tmp, 'd.md'), 'checks: tests ✓ selftest ✗\n');
+    assert.equal((await f.run(['deliver', '--file', path.join(f.tmp, 'd.md'), '--lane', 'demo'])).code, 0);
+    assert.equal((await f.run(['ask', 'why', 'not?', '--lane', 'demo'])).code, 0);
+    const r = await f.run(['reserve', 'migration', '--lane', 'demo']);
+    assert.equal(r.code, 0, r.err);
+    const wt = path.join(f.tmp, 'repo-demo');
+    fs.writeFileSync(path.join(wt, 'new.txt'), 'n');
+    git(wt, 'add', '.');
+    git(wt, 'commit', '-m', 'work');
+    git(f.root, 'merge', '--no-edit', 'feat/demo');
+    const d = await f.run(['done', 'demo']);
+    assert.equal(d.code, 0, d.err);
+    const ev = readEvents(path.join(f.dir, 'events.jsonl'));
+    assert.deepEqual(ev.map((e) => e.type), ['lane.briefed', 'lane.stage', 'lane.delivered', 'lane.question', 'reserve', 'lane.merged']);
+    assert.equal(ev[0].lane, 'demo');
+    assert.equal(ev[0].model, 'sonnet');
+    assert.deepEqual(ev[1].data, { stage: 'designing' });
+    assert.equal(ev[1].note, 'n1');
+    assert.deepEqual(ev[2].checks, [{ name: 'tests', ok: true }, { name: 'selftest', ok: false }]);
+    assert.equal(ev[3].note, 'why not?');
+    assert.deepEqual(ev[4].data, { key: 'migration', value: '0001' });
+    assert.match(ev[5].sha, /^[0-9a-f]{40}$/);
+    assert.ok(ev.every((e) => e.actor === 'human'), JSON.stringify(ev.map((e) => e.actor)));
+  } finally { f.cleanup(); }
+});
+
+test('event records a typed event and validates its flags', async () => {
+  const f = fixture();
+  try {
+    const ok = await f.run(['event', 'deploy', '--sha', 'abc1234', '--note', 'n']);
+    assert.equal(ok.code, 0, ok.err);
+    assert.match(ok.out, /event deploy recorded/);
+    const rv = await f.run(['event', 'review', '--lane', 'demo', '--verdict', 'fail', '--defects', '2', '--model', 'opus', '--cost', '0.42']);
+    assert.equal(rv.code, 0, rv.err);
+    const ev = readEvents(path.join(f.dir, 'events.jsonl'));
+    assert.deepEqual(ev.map((e) => [e.type, e.actor]), [['deploy', 'human'], ['review', 'human']]);
+    assert.equal(ev[0].sha, 'abc1234');
+    assert.deepEqual([ev[1].lane, ev[1].verdict, ev[1].defects, ev[1].model, ev[1].costUsd], ['demo', 'fail', 2, 'opus', 0.42]);
+    assert.equal((await f.run(['event', 'review', '--defects', 'x'])).code, 2);
+    assert.equal((await f.run(['event', 'Bad.Type'])).code, 2);
+    assert.equal((await f.run(['event'])).code, 2);
+    assert.equal((await f.run(['event', 'deploy'], { env: { CLAUDECODE: '1', OFFLIMITS_ROLE: 'worker' } })).code, 3);
+    const c = await f.run(['event', 'deploy'], { env: { CLAUDECODE: '1', OFFLIMITS_ROLE: 'coordinator' } });
+    assert.equal(c.code, 0, c.err);
+    assert.equal(readEvents(path.join(f.dir, 'events.jsonl')).at(-1).actor, 'coordinator');
+  } finally { f.cleanup(); }
+});
+
+test('room is refused inside Claude in every role and validates --port; help lists it', async () => {
+  const f = fixture();
+  try {
+    for (const role of ['coordinator', 'worker', undefined]) {
+      const env = { CLAUDECODE: '1' };
+      if (role) env.OFFLIMITS_ROLE = role;
+      const r = await f.run(['room'], { env });
+      assert.equal(r.code, 3, `${role}: ${r.err}`);
+      assert.match(r.err, /answers approvals for the human/);
+    }
+    assert.equal((await f.run(['room', '--port', '80'])).code, 2);
+    assert.equal((await f.run(['room', '--port', 'abc'])).code, 2);
+    let got = null;
+    const ok = await f.run(['room', '--port', '4800', '--no-open'], { extra: { runRoom: async (o) => { got = o; return 0; } } });
+    assert.equal(ok.code, 0, ok.err);
+    assert.equal(got.flags.port, 4800);
+    assert.equal(got.flags['no-open'], true);
+    assert.match((await f.run(['help'])).out, /room \[--config/);
   } finally { f.cleanup(); }
 });

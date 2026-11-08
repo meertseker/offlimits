@@ -1,7 +1,7 @@
 // Decision entry point: dispatches a hook input to the shell or MCP rules.
 
 import { expandWithState } from './shell.mjs';
-import { checkSegment, resolveDir, SHELL_RULE_IDS } from './rules/shell-rules.mjs';
+import { checkHumanOnly, checkSegment, resolveDir, SHELL_RULE_IDS } from './rules/shell-rules.mjs';
 import { checkMcp } from './rules/mcp-rules.mjs';
 import { checkFileTool, checkBashWrite, checkRedirects } from './rules/file-rules.mjs';
 
@@ -21,7 +21,8 @@ export const RULE_IDS = Object.freeze([
 ]);
 
 /**
- * Limits for one shell command. Beyond maxBytes, maxSegments or maxVars the command is opaque;
+ * Limits for one shell command. Beyond maxBytes, maxSegments, maxVars, maxBlockWalks (PowerShell script blocks
+ * and hash tables walked) or maxNestedBytes (nested text walked in total) the command is opaque;
  * beyond maxBraceWords (all brace words judged), maxBranchLookups (distinct directories whose
  * branch is read with git) or branchLookupMs (time spent in those reads) the remaining checks
  * count as unsure.
@@ -30,6 +31,8 @@ export const BUDGET = Object.freeze({
   maxBytes: 64 * 1024,
   maxSegments: 1000,
   maxVars: 200,
+  maxBlockWalks: 8192,
+  maxNestedBytes: 1024 * 1024,
   maxBraceWords: 4096,
   maxBranchLookups: 16,
   branchLookupMs: 3000,
@@ -80,8 +83,26 @@ function segmentCwd(base, cwd) {
  * `segCwd` (absolute directory the segment runs in, null when unknown),
  * `segEnvs` (variables set by earlier segments) and `heads` (branches checked out earlier).
  */
+/** The coordinator is trusted, except for what no agent may do: start the control room or change CLAUDECODE. */
+function coordinatorCheck(input, ctx) {
+  const tool = String(input?.tool_name ?? '');
+  if (tool !== 'Bash' && tool !== 'PowerShell') return null;
+  const command = String(input?.tool_input?.command ?? '');
+  // fast path: the coordinator's everyday commands never mention either
+  if (!/CLAUDECODE|\broom\b/i.test(command)) return null;
+  const opaque = { action: 'deny', rule: 'opaque-shell', reason: 'Command mentions CLAUDECODE or the control room and is too large to inspect in time.' };
+  if (command.length > BUDGET.maxBytes) return opaque;
+  const segs = expandWithState(command, BUDGET, { ps: tool === 'PowerShell' });
+  if (segs.overBudget) return opaque;
+  for (const { segment, cwd, envs } of segs) {
+    const d = checkHumanOnly(segment, { ...ctx, segCwd: segmentCwd(ctx.cwd, cwd), segEnvs: envs });
+    if (d) return d;
+  }
+  return null;
+}
+
 export function decide(input, ctx) {
-  if (ctx.role === 'coordinator') return ALLOW;
+  if (ctx.role === 'coordinator') return coordinatorCheck(input, ctx) ?? ALLOW;
   const tool = String(input?.tool_name ?? '');
   const toolInput = input?.tool_input ?? {};
 
@@ -89,7 +110,7 @@ export function decide(input, ctx) {
     const command = String(toolInput.command ?? '');
     // Input budget: the hook must answer well inside Claude Code's hook timeout, or the call proceeds.
     if (command.length > BUDGET.maxBytes) return overBudget(ctx, `is longer than ${BUDGET.maxBytes / 1024} KB`);
-    const segs = expandWithState(command, BUDGET);
+    const segs = expandWithState(command, BUDGET, { ps: tool === 'PowerShell' });
     if (segs.overBudget) return overBudget(ctx, `has ${segs.overBudget}`);
     const heads = new Map();
     const shared = { ...ctx, currentBranch: branchLookup(ctx.currentBranch), work: { words: BUDGET.maxBraceWords } };

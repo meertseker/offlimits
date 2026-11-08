@@ -1,10 +1,12 @@
 /** Which team CLI commands a caller may run, decided from its environment. */
 
-export const PRIVILEGED = ['coordinator', 'worker', 'done', 'init'];
+export const PRIVILEGED = ['coordinator', 'worker', 'done', 'init', 'start', 'event'];
 export const LANE_CMDS = ['stage', 'deliver', 'ask'];
+// The control room answers approvals for the human: never from inside Claude Code, in any role.
+export const HUMAN_ONLY = ['room'];
 
 // A solo Claude session (no recognised role) has no lane: only these.
-const SOLO_ALLOWED = ['init', 'board', 'reserve', 'ask'];
+const SOLO_ALLOWED = ['init', 'start', 'board', 'reserve', 'ask'];
 
 /**
  * @param {string} cmd
@@ -14,6 +16,7 @@ const SOLO_ALLOWED = ['init', 'board', 'reserve', 'ask'];
  */
 export function guard(cmd, env, roleEnv = 'OFFLIMITS_ROLE') {
   if (!env.CLAUDECODE) return null;
+  if (HUMAN_ONLY.includes(cmd)) return `offlimits team: "${cmd}" answers approvals for the human; start it yourself from a terminal.`;
   const role = String(env[roleEnv] || '').toLowerCase();
   let allowed;
   if (role === 'coordinator') allowed = true;

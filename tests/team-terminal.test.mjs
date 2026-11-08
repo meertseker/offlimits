@@ -199,3 +199,22 @@ test('claudeInvocation passes --permission-mode on windows', () => {
   const r = claudeInvocation(['--model', 'opus', '-n', 'coordinator', '--permission-mode', 'acceptEdits'], { platform: 'win32', where: () => [shim] });
   assert.equal(r.args[3], `""${shim}" --model opus -n coordinator --permission-mode acceptEdits"`);
 });
+
+import { teamCommand } from '../hooks/lib/team/terminal.mjs';
+
+test('teamCommand builds the same line for pwsh and sh', () => {
+  const bin = 'C:\\x\\offlimits\\bin\\team.mjs';
+  assert.equal(teamCommand({ shell: 'pwsh', bin, args: ['coordinator'] }), `node '${bin}' coordinator`);
+  assert.equal(teamCommand({ shell: 'sh', bin: '/opt/offlimits/bin/team.mjs', args: ['coordinator'] }), "node '/opt/offlimits/bin/team.mjs' coordinator");
+});
+
+test('teamCommand rejects unsafe bin, shell and args', () => {
+  const ok = '/opt/offlimits/bin/team.mjs';
+  for (const bin of ["/a/b'c.mjs", '/a/$(x).mjs', '/a/b;c.mjs', '/a/`x`.mjs', '/a/b&c.mjs', '/a/~x/t.mjs']) {
+    assert.throws(() => teamCommand({ shell: 'sh', bin, args: ['coordinator'] }), /unsafe value/, bin);
+  }
+  assert.throws(() => teamCommand({ shell: 'sh', bin: ok, args: ['worker'] }), /unsafe value/);
+  assert.throws(() => teamCommand({ shell: 'sh', bin: ok, args: ['coordinator', '--x'] }), /unsafe value/);
+  assert.throws(() => teamCommand({ shell: 'sh', bin: ok, args: [] }), /unsafe value/);
+  assert.throws(() => teamCommand({ shell: 'cmd', bin: ok, args: ['coordinator'] }), /unsafe value/);
+});

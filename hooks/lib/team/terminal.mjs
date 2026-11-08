@@ -48,6 +48,13 @@ export function sessionCommand({ shell, role, lane, model, name, prompt, roleEnv
   return `${env.join(' ')} ${tail}`;
 }
 
+/** The line a new terminal runs to start the coordinator: `node '<bin>' coordinator`. */
+export function teamCommand({ shell, bin, args }) {
+  if (shell !== 'pwsh' && shell !== 'sh') throw new Error('unsafe value');
+  if (!Array.isArray(args) || args.length !== 1 || args[0] !== 'coordinator') throw new Error('unsafe value');
+  return `node '${promptText(bin)}' coordinator`;
+}
+
 export function launchSpec({ platform, dir, title, command, has }) {
   if (platform === 'win32') {
     const sh = has('pwsh') ? 'pwsh' : 'powershell';
