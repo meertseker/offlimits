@@ -2,11 +2,11 @@
 
 ## Pending
 
-- [ ] Release 0.4.0: #2 and #4 are merged; merge the version bump PR (`feat/release-040`), then tag `v0.4.0` (Mert's go).
+- [x] Released 0.4.0 on 2026-11-14: #2, #4 and the version bump (#5) are merged, tag `v0.4.0` (Mert: straight to main).
 
 Published 2026-10-25: https://github.com/meertseker/offlimits, release v0.1.0, CI green on Windows, macOS and Linux (Node 20 and 22), `main` ruleset active. Verified end to end: installed from GitHub with `claude plugin install offlimits --marketplace meertseker/offlimits`, a real `--dangerously-skip-permissions` session with `OFFLIMITS_ROLE=worker` was blocked on `git push origin main`.
 
-- [ ] Tag and release v0.3.0 (Mert's go).
+- [x] Tagged and released v0.3.0 on 2026-10-30.
 - [ ] Anthropic directory submission (Mert, browser): claude.ai/directory/manage, Submit new, Plugin bundle, repo `meertseker/offlimits`, folder root, press Validate first. Icon is `.claude-plugin/icon.png` and is fixed on first save.
 - [ ] English X account for launch posts (Mert).
 - [ ] Şeker platform: install the plugin at project scope next to the old hook and run both for a week, then remove the old hook and migrate to team mode (`init`, `team.rules`, `reservations.migration`).
