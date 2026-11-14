@@ -2,7 +2,7 @@
 
 ## Pending
 
-- [ ] Merge #2 (0.3.1), then the control room PR (`feat/room`, stacked on #2), and release 0.4.0 (Mert's go).
+- [ ] Release 0.4.0: #2 and #4 are merged; merge the version bump PR (`feat/release-040`), then tag `v0.4.0` (Mert's go).
 
 Published 2026-10-25: https://github.com/meertseker/offlimits, release v0.1.0, CI green on Windows, macOS and Linux (Node 20 and 22), `main` ruleset active. Verified end to end: installed from GitHub with `claude plugin install offlimits --marketplace meertseker/offlimits`, a real `--dangerously-skip-permissions` session with `OFFLIMITS_ROLE=worker` was blocked on `git push origin main`.
 
